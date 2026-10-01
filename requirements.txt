@@ -1,6 +1,41 @@
+cffi==2.1.0
+
+# --- web ---
 fastapi
-uvicorn
-pymupdf
+uvicorn[standard]
+python-multipart          # file uploads
+
+# --- database ---
+sqlalchemy>=2.0
+asyncpg                   # async Postgres driver (FastAPI)
+psycopg[binary]           # sync Postgres driver (agent tools)
+
+# --- validation / settings ---
 pydantic
-ipykernel
-jupyter
+pydantic-settings
+email-validator           # EmailStr
+
+# --- auth ---
+pyjwt
+pwdlib[argon2]
+
+# --- RAG ---
+cohere
+openai
+qdrant-client
+pymupdf                   # fitz (PDF reading + page rendering)
+httpx
+
+# --- cache ---
+redis
+
+# --- multi-agent ---
+langchain
+langchain-openai
+langchain-core
+langgraph
+python-dotenv
+
+# --- guardrails ---
+nemoguardrails            # NVIDIA NeMo Guardrails (topical input rail before the router)
+
