@@ -31,3 +31,5 @@ async def get_db():
     """FastAPI dependency: yields one async session per request."""
     async with AsyncLocalSession() as session:
         yield session
+
+ 

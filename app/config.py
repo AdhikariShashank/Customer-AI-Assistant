@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/customer_support"     # async (FastAPI)
     sync_database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/customer_support"  # sync (agent tools)
     redis_url: str = "redis://localhost:6379/0"
+    qdrant_url: str = "http://localhost:6333"
 
 
      # --- Auth (JWT) ---
