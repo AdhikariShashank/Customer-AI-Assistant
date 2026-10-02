@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from ..db import get_db
 from ..security import require_admin
-from ..models import User
+from ..models import User, Document
 from ..config import get_settings
 from pathlib import Path
 import hashlib
+import fitz
 
 
 router = APIRouter(tags=["documents"])
@@ -45,6 +47,42 @@ async def create_document(file: UploadFile = File(...),
             buffer.write(chunk)
 
     file_hash = calculate_hash(temp_path)
+    result = await db.scalar(select(Document).where(Document.file_hash == file_hash))
+
+    if result:
+        print("Document already exists!")
+        return {
+            "status": "Document already present",
+            "document_id": result.id
+        }
+
+    pdf = fitz.open(temp_path)
+    page_count = len(pdf)
+    pdf.close()
+
+    document = Document(
+        file_hash = file_hash,
+        user_id = admin.id,
+        filename = file.filename,
+        path = str(temp_path),
+        pages = page_count,
+        status = "ready"
+    )
+
+    db.add(document)
+    await db.commit()
+    await db.refresh(document)
+
+    return {
+        "status": "Document added",
+        "document_id": document.id,
+        "pages": document.pages
+    }
+    
+    
+
+
+
 
     
 
