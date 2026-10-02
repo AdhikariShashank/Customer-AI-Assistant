@@ -31,3 +31,5 @@ htmlcov/
 
 # Local data
 data/
+
+storage/

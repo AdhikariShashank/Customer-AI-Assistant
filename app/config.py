@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24
 
+    temp_documents_path: str = "storage/documents"
+
 
 
 @lru_cache()
