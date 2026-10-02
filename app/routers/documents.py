@@ -8,6 +8,8 @@ from ..config import get_settings
 from pathlib import Path
 import hashlib
 import fitz
+from langchain_core.rate_limiters import InMemoryRateLimiter
+from langchain_openai import ChatOpenAI
 
 
 router = APIRouter(tags=["documents"])
@@ -16,12 +18,36 @@ settings = get_settings()
 STORAGE_DIR =  Path(settings.temp_documents_path)
 STORAGE_DIR.mkdir(parents= True, exist_ok= True)
 
+_extract_limiter = InMemoryRateLimiter(requests_per_second=0.4, check_every_n_seconds=0.2, max_bucket_size=2)
+xllm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_retries=12,   # vision extraction (throttled)
+                  rate_limiter=_extract_limiter)
+
+
 def calculate_hash(file_path: Path):
     sha256 = hashlib.sha256()
     with file_path.open("rb") as file:
         while chunk := file.read(1024 * 1024):
             sha256.update(chunk)
     return sha256.hexdigest()
+
+def page_type(page: fitz.Page) -> str:
+    text_ = page.get_text().strip()
+    if len(text_) < 200:
+        return "image"
+    for it in page.get_image_info(xrefs=True):                 # big content image on a text page
+        if it.get("width", 0) * it.get("height", 0) >= 200 * 200 and abs(fitz.Rect(it["bbox"])) / abs(page.rect) > 0.15:
+            return "image"
+    return "text"
+
+
+def ingestDocument(file_path: Path):
+    pdf = fitz.open(file_path)
+
+    for i, page in enumerate(pdf, 1):
+        pageType = page_type(page)
+        if (pageType == "image"):
+            
+
 
 
 @router.post("/documents")
@@ -60,6 +86,10 @@ async def create_document(file: UploadFile = File(...),
     page_count = len(pdf)
     pdf.close()
 
+    ingestDocument(temp_path)
+
+    
+
     document = Document(
         file_hash = file_hash,
         user_id = admin.id,
@@ -78,19 +108,3 @@ async def create_document(file: UploadFile = File(...),
         "document_id": document.id,
         "pages": document.pages
     }
-    
-    
-
-
-
-
-    
-
-    
-
-    
-
-
-
-
-    
