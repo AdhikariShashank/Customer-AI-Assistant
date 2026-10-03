@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import get_settings
+from ..core.config import get_settings
 from ..db import get_db
 from ..models import User
 from ..schemas import UserCreate, UserOut, Token, LoginDTO

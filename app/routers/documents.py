@@ -4,12 +4,14 @@ from sqlalchemy import select
 from ..db import get_db
 from ..security import require_admin
 from ..models import User, Document
-from ..config import get_settings
+from ..core.config import get_settings
 from pathlib import Path
-import hashlib
-import fitz
+import fitz, base64, hashlib, uuid
 from langchain_core.rate_limiters import InMemoryRateLimiter
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
+from ..prompts.ingestion import VISION_READER_PROMPT
 
 
 router = APIRouter(tags=["documents"])
@@ -21,6 +23,19 @@ STORAGE_DIR.mkdir(parents= True, exist_ok= True)
 _extract_limiter = InMemoryRateLimiter(requests_per_second=0.4, check_every_n_seconds=0.2, max_bucket_size=2)
 xllm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_retries=12,   # vision extraction (throttled)
                   rate_limiter=_extract_limiter)
+
+def create_point_id()
+
+def page_data_url(page, zoom=2.0):
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+    return "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode()
+
+class VisionReader(BaseModel):
+    extracted_text: str = Field(description= "All text visible on the page, transcribed vertabim; " \
+    "tabular content as one line per row; '' if none")
+    caption: str = Field(description= "details description of charts/diagram/layout/photos; '' if none")
+
+vision_reader = xllm.with_structured_output(VisionReader)
 
 
 def calculate_hash(file_path: Path):
@@ -46,6 +61,35 @@ def ingestDocument(file_path: Path):
     for i, page in enumerate(pdf, 1):
         pageType = page_type(page)
         if (pageType == "image"):
+            native = page.get_text().strip()
+            vision_reader = vision_reader.invoke([
+                HumanMessage(content=[
+                    {
+                        "type": "text", 
+                        "text": VISION_READER_PROMPT.format(native)
+                    }, 
+                    {
+                        "type": "image",
+                        "image": page_data_url(page)
+                    }
+                ])
+            ])
+
+            point = {
+                id: str(UUI)
+            }
+
+            
+
+
+            
+
+            
+
+            
+
+
+            
             
 
 

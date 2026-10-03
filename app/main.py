@@ -1,8 +1,16 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from .qdrant import initialize_qdrant
 
 from .routers import auth, documents, products, cart, user
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_qdrant()
+
+    yield
+
+app = FastAPI(lifespan= lifespan)
 
 
 

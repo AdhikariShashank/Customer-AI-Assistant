@@ -4,7 +4,7 @@ from fastapi import Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from pwdlib import PasswordHash
 
-from .config import get_settings
+from .core.config import get_settings
 from .db import get_db
 from .models import User
 

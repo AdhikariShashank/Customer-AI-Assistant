@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncAttrs
 
-from .config import get_settings
+from .core.config import get_settings
 
 settings = get_settings()
 
