@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     sync_database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/customer_support"  # sync (agent tools)
     redis_url: str = "redis://localhost:6379/0"
     qdrant_url: str = "http://localhost:6333"
-    qdrant_collection = "customer-support"
-    embed_dim = 1536
+    qdrant_collection: str = "customer-support"
+    embed_dim: int = 1536
     
 
 
