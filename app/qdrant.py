@@ -11,7 +11,8 @@ from app.core.config import get_settings
 settings = get_settings()
 
 qdrant_client = QdrantClient(
-    url=settings.qdrant_url
+    url=settings.qdrant_url, 
+    cloud_inference=True
 )
 
 

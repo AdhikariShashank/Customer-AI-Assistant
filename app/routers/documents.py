@@ -110,8 +110,8 @@ def ingestDocument(file_path: Path):
             pts.append(models.PointStruct(
                 id = str(uuid.uuid4()),
                 vector = {
-                    "dense": image_embed
-                    # "bm25": models.Document(text = content or f"Page: {i}", model= "Qdrant/bm25")
+                    "dense": image_embed,
+                    "bm25": models.Document(text = content or f"Page: {i}", model= "Qdrant/bm25")
                 },
                 payload= {
                     "path": file_path,
