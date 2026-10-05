@@ -1,8 +1,9 @@
-"""Database tables. Same style as the reference project (SQLAlchemy 2.0 Mapped columns)."""
 from datetime import datetime
 
-from sqlalchemy import String, Integer, Float, DateTime, ForeignKey, func
+from sqlalchemy import String, Integer, Float, DateTime, ForeignKey, JSON, Enum as SQLEnum, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from .enums.cart import CartStatus
+from .enums.product import ProductStatus
 
 from .db import Base
 
@@ -23,9 +24,25 @@ class Product(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     description: Mapped[str] = mapped_column(String(1000), default="")
+    category: Mapped[str] = mapped_column(String(255), index=True)
     price: Mapped[float] = mapped_column(Float, default=0.0)
     stock: Mapped[int] = mapped_column(Integer, default=0)
+    product_metadata: Mapped[dict] = mapped_column(
+    "metadata",
+    JSON,
+    default=dict
+)
+    status: Mapped[ProductStatus] = mapped_column(
+    SQLEnum(ProductStatus),
+    default=ProductStatus.ACTIVE,
+    nullable=False
+)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
 
 
 class CartItem(Base):
@@ -35,6 +52,11 @@ class CartItem(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     quantity: Mapped[int] = mapped_column(Integer, default=1)
+    cart_id: Mapped[int] = mapped_column(
+        ForeignKey("carts.id"),
+        nullable=False,
+        index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -55,14 +77,38 @@ class OrderItem(Base):
     __tablename__ = "order_items"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
-    product_name: Mapped[str] = mapped_column(String(255))
-    price: Mapped[float] = mapped_column(Float, default=0.0)     # price at time of order
-    quantity: Mapped[int] = mapped_column(Integer, default=1)
 
-    order: Mapped["Order"] = relationship(back_populates="items")
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("orders.id"),
+        index=True,
+        nullable=False
+    )
 
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id"),
+        nullable=False
+    )
+
+    product_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False
+    )
+
+    price: Mapped[float] = mapped_column(
+        Float,
+        default=0.0,
+        nullable=False
+    )
+
+    quantity: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        nullable=False
+    )
+
+    order: Mapped["Order"] = relationship(
+        back_populates="items"
+    )
 
 class Ticket(Base):
     __tablename__ = "tickets"
@@ -86,3 +132,27 @@ class Document(Base):
     pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String(32), default="ready", server_default="ready")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Cart(Base):
+    __tablename__ = "carts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True
+    )
+
+    status: Mapped[CartStatus] = mapped_column(
+        SQLEnum(CartStatus),
+        default=CartStatus.ACTIVE,
+        nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )

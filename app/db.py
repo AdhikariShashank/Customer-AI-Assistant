@@ -26,6 +26,10 @@ SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
 class Base(AsyncAttrs, DeclarativeBase):
     pass
 
+async def create_tables():
+    async with engine.begin() as conn:
+        print("REGISTERED TABLES:", Base.metadata.tables.keys())
+        await conn.run_sync(Base.metadata.create_all)
 
 async def get_db():
     """FastAPI dependency: yields one async session per request."""
