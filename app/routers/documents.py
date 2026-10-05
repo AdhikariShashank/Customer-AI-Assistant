@@ -10,14 +10,17 @@ import fitz, base64, hashlib, uuid
 from langchain_core.rate_limiters import InMemoryRateLimiter
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 from ..prompts.ingestion import VISION_READER_PROMPT
 from qdrant_client import models
 from ..qdrant import qdrant_client
 import cohere
+import pymupdf4llm
 
 
 router = APIRouter(tags=["documents"])
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
 
 settings = get_settings()
 STORAGE_DIR =  Path(settings.temp_documents_path)
@@ -31,6 +34,62 @@ co = cohere.ClientV2(api_key=settings.cohere_api_key)
 _extract_limiter = InMemoryRateLimiter(requests_per_second=0.4, check_every_n_seconds=0.2, max_bucket_size=2)
 xllm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_retries=12,   # vision extraction (throttled)
                   rate_limiter=_extract_limiter)
+
+
+def embed_texts(texts, input_type="search_document"):
+    out = []
+    for i in range(0, len(texts), 90):
+        batch = texts[i:i+90]
+        r = co.embed(model="embed-v4.0", input_type=input_type,
+                embedding_types=["float"], output_dimension=settings.embed_dim, texts=batch)
+        out += [list(v) for v in r.embeddings.float_]
+    return out
+
+def to_units(text_):
+    if len(text_) <= 1800:
+        return [text_]
+    else:
+        return splitter.split_text(text_)
+
+
+def item_number(entry):
+    e = entry.strip()
+    if e.startswith("[") and "]" in e[:7] and e[1:e.index("]")].isdigit():
+        return int(e[1:e.index("]")])
+    
+    "Hello".split(" ", )
+    
+    first = e.split(" ", 1)[0]                     # look at the first word only
+    if first[:-1].isdigit() and first[-1] == ".":                  # "12."
+        return int(first[:-1])
+    
+    if len(first) == 2 and first[0].isalpha() and first[1] in ".)": # "A." or "a)"
+        return ord(first[0].upper()) - 64
+    
+    return None
+
+def is_item(line):
+    """A line is a list item if it starts with a markdown bullet OR with a number/letter marker."""
+    return line.startswith(("- ", "* ")) or item_number(line) is not None
+
+def split_page(lines):
+    """ONE simple rule for every line: list item -> its own block, anything else -> text block."""
+    blocks = []
+    
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        
+        if is_item(s):
+            text = s[2:].strip() if s[:2] in ("- ", "* ") else s   # drop the bullet prefix
+            blocks.append({"type": "item", "text": text})
+        elif blocks and blocks[-1]["type"] == "text":
+            blocks[-1]["text"] += "\n" + s                         # grow the current text block
+        else:
+            blocks.append({"type": "text", "text": s})
+    print(blocks)
+    return blocks
 
 def page_data_url(page, zoom=2.0):
     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
@@ -79,29 +138,31 @@ def ingestDocument(file_path: Path):
     pdf: fitz = fitz.open(file_path)
 
     pts = []
+    last_no = None
+    list_id = 0
     for i, page in enumerate(pdf, 1):
         pageType = page_type(page)
-        if (pageType == "text"):
+        if (pageType == "image"):
             native = page.get_text().strip()
-            # response: VisionReader = vision_reader.invoke([
-            #     HumanMessage(content=[
-            #         {
-            #             "type": "text", 
-            #             "text": VISION_READER_PROMPT.format(native_text= native)
-            #         }, 
-            #         {
-            #             "type": "image_url",
-            #             "image_url": {
-            #                 "url": page_data_url(page)
-            #             }
-            #         }
-            #     ])
-            # ])
+            response: VisionReader = vision_reader.invoke([
+                HumanMessage(content=[
+                    {
+                        "type": "text", 
+                        "text": VISION_READER_PROMPT.format(native_text= native)
+                    }, 
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": page_data_url(page)
+                        }
+                    }
+                ])
+            ])
 
-            response = VisionReader(
-                extracted_text="This is some dummy extracted text from the PDF page.",
-                caption="This page contains a sample diagram showing the relationship between products and customers."
-            )
+            # response = VisionReader(
+            #     extracted_text="This is some dummy extracted text from the PDF page.",
+            #     caption="This page contains a sample diagram showing the relationship between products and customers."
+            # )
 
             content = f"extracted_text: \n{response.extracted_text}\n\ncaption: \n{response.caption}"
 
@@ -124,19 +185,67 @@ def ingestDocument(file_path: Path):
                 }
             ))
 
-            if pts:
-                for p in pts:
-                    print("POINT ID:", p.id)
-                    print("VECTOR:", p.vector)
-    
-                    dense = p.vector["dense"]
-                    print("DENSE TYPE:", type(dense))
-                    print("DENSE LEN:", len(dense))
-                    print("FIRST ELEMENT TYPE:", type(dense[0]))
-                qdrant_client.upsert(settings.qdrant_collection, pts)
-            
+            lines = content.splitlines()
+
+        else:
+            lines = pymupdf4llm.to_markdown(pdf, pages = [i - 1]).splitlines()
+
+        blocks = split_page(lines)
+
+        units = []
+
+        for block in blocks:
+            if block["type"] == "item":
+                no = item_number(block["text"])
+            else:
+                no = None
+
+            if no is not None:
+                if last_no is None or no <= last_no:
+                    list_id += 1
+
+                last_no = no
+                units.append({
+                    "payload": {
+                        "kind": "item",
+                        "list_id": list_id,
+                        "item_no": no
+                    }, 
+                "text": block["text"]
+                })
+            else:
+                for u in to_units(block["text"]):
+                    units.append({
+                        "payload":
+                            {
+                                "kind": "chunk"
+                            },
+                            "text": u
+                        }
+                    )
+
+        if last_no is not None and not any(b["type"] == "item" for b in blocks):
+            last_no = None                                     # a page with no items ends the list
+
+        if units:
+            vecs = embed_texts([u["text"] for u in units])
+            for seq, vector in enumerate( vecs):
+                unit = units[seq]
+                pts.append(models.PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector={"dense": vector,
+                            "bm25": models.Document(text=unit["text"] or " ", model="Qdrant/bm25")},
+                    payload={"filename": pdf.name, "page": i, "seq": seq,
+                             "text": unit["text"], **unit["payload"]}))
+
+        if pts:
+            qdrant_client.upsert(settings.qdrant_collection, points=pts)
 
             
+
+
+
+
 
             
 

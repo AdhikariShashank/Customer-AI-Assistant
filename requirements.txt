@@ -24,6 +24,7 @@ cohere
 openai
 qdrant-client
 pymupdf                   # fitz (PDF reading + page rendering)
+pymupdf4llm
 httpx
 
 # --- cache ---
@@ -33,6 +34,7 @@ redis
 langchain
 langchain-openai
 langchain-core
+langchain-text-splitters
 langgraph
 python-dotenv
 
