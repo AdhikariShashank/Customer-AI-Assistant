@@ -241,6 +241,8 @@ def ingestDocument(file_path: Path):
         if pts:
             qdrant_client.upsert(settings.qdrant_collection, points=pts)
 
+    pdf.close()
+
             
 
 
