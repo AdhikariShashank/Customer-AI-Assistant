@@ -26,3 +26,9 @@ class User(Base):
         "Cart", back_populates="user", uselist=False
     )
     orders = relationship("Order", back_populates="user")
+    role: Mapped[str] = mapped_column(
+    String(20),
+    nullable=False,
+    default="user",
+    server_default="user",
+    )
