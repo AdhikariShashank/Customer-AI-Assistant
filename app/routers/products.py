@@ -9,8 +9,6 @@ from app.services.product import ProductService
 # products.py
 from app.routers.dependencies import get_product_service
 
-service: ProductService = Depends(get_product_service)
-
 
 router = APIRouter(prefix="/api/v1/products", tags=["Products"])
 
@@ -26,7 +24,7 @@ async def search_products(
     max_price: float | None = Query(default=None, gt=0),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    service: ProductService = Depends(),
+    service: ProductService = Depends(get_product_service),
 ):
     products, total = await service.search_products(
         query=query,
@@ -52,7 +50,7 @@ async def search_products(
 )
 async def get_product(
     product_id: int,
-    service: ProductService = Depends(),
+    service: ProductService = Depends(get_product_service),
 ):
     product = await service.get_product(product_id)
 

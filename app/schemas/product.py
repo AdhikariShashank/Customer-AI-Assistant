@@ -1,3 +1,4 @@
+
 from datetime import datetime
 from decimal import Decimal
 
@@ -13,7 +14,10 @@ class ProductResponse(BaseModel):
     description: str | None = None
     price: Decimal
     stock: int
-    metadata: dict | None = None
+    metadata: dict | None = Field(
+        default=None,
+        validation_alias="metadata_json",
+    )
     created_at: datetime
 
 

@@ -5,7 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.cart import Cart, CartItem
+from app.models.cart import Cart
+from app.models.cart_item import CartItem
 
 
 class CartRepository:

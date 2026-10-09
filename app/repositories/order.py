@@ -4,8 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import AppException
-from app.models.cart import Cart, CartItem
-from app.models.order import Order, OrderItem
+from app.models.cart import Cart
+from app.models.cart_item import CartItem
+from app.models.order import Order
+from app.models.order_item import OrderItem
 from app.models.product import Product
 
 

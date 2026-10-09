@@ -2,8 +2,6 @@
 from app.routers.dependencies import get_order_service
 from ..security import get_current_user
 
-service: OrderService = Depends(get_order_service)
-
 from fastapi import APIRouter, Depends, status
 
 from app.schemas.common import SuccessResponse
@@ -26,7 +24,7 @@ router = APIRouter(
 )
 async def list_orders(
     current_user=Depends(get_current_user),
-    service: OrderService = Depends(),
+    service: OrderService = Depends(get_order_service),
 ):
     orders, total = await service.list_orders(
         user_id=current_user.id
@@ -48,7 +46,7 @@ async def list_orders(
 async def get_order(
     order_id: int,
     current_user=Depends(get_current_user),
-    service: OrderService = Depends(),
+    service: OrderService = Depends(get_order_service),
 ):
     order = await service.get_order(
         user_id=current_user.id,
@@ -68,7 +66,7 @@ async def get_order(
 )
 async def place_order(
     current_user=Depends(get_current_user),
-    service: OrderService = Depends(),
+    service: OrderService = Depends(get_order_service),
 ):
     order = await service.place_order(
         user_id=current_user.id
@@ -87,7 +85,7 @@ async def place_order(
 async def cancel_order(
     order_id: int,
     current_user=Depends(get_current_user),
-    service: OrderService = Depends(),
+    service: OrderService = Depends(get_order_service),
 ):
     order = await service.cancel_order(
         user_id=current_user.id,

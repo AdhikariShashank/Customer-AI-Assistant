@@ -3,7 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from ..db import get_db
 from ..security import require_admin
-from ..models.common import User, Document
+from ..models.common import Document
+from ..models.user import User
 from ..core.config import get_settings
 from pathlib import Path
 import fitz, base64, hashlib, uuid

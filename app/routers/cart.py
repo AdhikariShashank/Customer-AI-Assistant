@@ -11,8 +11,6 @@ from app.services.cart import CartService
 from app.routers.dependencies import get_cart_service
 from ..security import get_current_user
 
-service: CartService = Depends(get_cart_service)
-
 
 router = APIRouter(
     prefix="/api/v1/cart",
@@ -26,7 +24,7 @@ router = APIRouter(
 )
 async def get_cart(
     current_user=Depends(get_current_user),
-    service: CartService = Depends(),
+    service: CartService = Depends(get_cart_service),
 ):
     cart = await service.get_cart(
         user_id=current_user.id
@@ -46,7 +44,7 @@ async def get_cart(
 async def add_cart_item(
     request: AddCartItemRequest,
     current_user=Depends(get_current_user),
-    service: CartService = Depends(),
+    service: CartService = Depends(get_cart_service),
 ):
     cart = await service.add_item(
         user_id=current_user.id,
@@ -68,7 +66,7 @@ async def update_cart_item(
     item_id: int,
     request: UpdateCartItemRequest,
     current_user=Depends(get_current_user),
-    service: CartService = Depends(),
+    service: CartService = Depends(get_cart_service),
 ):
     cart = await service.update_item(
         user_id=current_user.id,
@@ -89,7 +87,7 @@ async def update_cart_item(
 async def remove_cart_item(
     item_id: int,
     current_user=Depends(get_current_user),
-    service: CartService = Depends(),
+    service: CartService = Depends(get_cart_service),
 ):
     cart = await service.remove_item(
         user_id=current_user.id,

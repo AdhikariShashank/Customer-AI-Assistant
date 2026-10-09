@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, DateTime, Integer, Numeric, String, Text, func
+    Boolean, DateTime, Integer, Numeric, String, Text, JSON, func
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,8 +21,11 @@ class Product(Base):
     stock: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     metadata_json: Mapped[dict | None] = mapped_column(
-        "metadata", nullable=True
-    )
+    "metadata",
+    JSON,
+    nullable=True,
+    default=dict,
+)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
