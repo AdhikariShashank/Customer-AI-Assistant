@@ -6,10 +6,6 @@ from app.schemas.product import (
     ProductResponse,
 )
 from app.services.product import ProductService
-# products.py
-from app.routers.dependencies import get_product_service
-
-service: ProductService = Depends(get_product_service)
 
 
 router = APIRouter(prefix="/api/v1/products", tags=["Products"])

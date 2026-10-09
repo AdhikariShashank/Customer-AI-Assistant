@@ -6,7 +6,7 @@ from pwdlib import PasswordHash
 
 from .core.config import get_settings
 from .db import get_db
-from .models import User
+from .models.user import User
 
 settings = get_settings()
 hashalgo = PasswordHash.recommended()

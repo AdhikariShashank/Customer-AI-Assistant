@@ -15,9 +15,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan= lifespan)
 
 
+from .routers import auth, documents, products, cart, user
+
+# Keep your existing lifespan and FastAPI initialization.
 
 app.include_router(auth.router)
 app.include_router(documents.router)
+app.include_router(products.router)
+app.include_router(cart.router)
+app.include_router(user.router)
 
 @app.get("/health", tags=["health"])
 def health():   

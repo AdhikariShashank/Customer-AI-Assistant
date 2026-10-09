@@ -31,9 +31,15 @@ async def create_tables():
         print("REGISTERED TABLES:", Base.metadata.tables.keys())
         await conn.run_sync(Base.metadata.create_all)
 
+
 async def get_db():
-    """FastAPI dependency: yields one async session per request."""
+    """One async database session per request."""
     async with AsyncLocalSession() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
  
