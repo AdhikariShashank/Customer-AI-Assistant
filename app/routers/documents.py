@@ -7,7 +7,7 @@ from ..models.common import Document
 from ..models.user import User
 from ..core.config import get_settings
 from pathlib import Path
-import fitz, base64, hashlib, uuid
+import pymupdf, base64, hashlib, uuid
 from langchain_core.rate_limiters import InMemoryRateLimiter
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
@@ -93,7 +93,7 @@ def split_page(lines):
     return blocks
 
 def page_data_url(page, zoom=2.0):
-    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
     return "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode()
 
 class VisionReader(BaseModel):
@@ -104,7 +104,7 @@ class VisionReader(BaseModel):
 vision_reader = xllm.with_structured_output(VisionReader)
 
 
-def embed_image(page: fitz.Page):
+def embed_image(page: pymupdf.Page):
     image_data_url = page_data_url(page)
 
     response = co.embed(
@@ -125,18 +125,18 @@ def calculate_hash(file_path: Path):
             sha256.update(chunk)
     return sha256.hexdigest()
 
-def page_type(page: fitz.Page) -> str:
+def page_type(page: pymupdf.Page) -> str:
     text_ = page.get_text().strip()
     if len(text_) < 200:
         return "image"
     for it in page.get_image_info(xrefs=True):                 # big content image on a text page
-        if it.get("width", 0) * it.get("height", 0) >= 200 * 200 and abs(fitz.Rect(it["bbox"])) / abs(page.rect) > 0.15:
+        if it.get("width", 0) * it.get("height", 0) >= 200 * 200 and abs(pymupdf.Rect(it["bbox"])) / abs(page.rect) > 0.15:
             return "image"
     return "text"
 
 
 def ingestDocument(file_path: Path):
-    pdf: fitz = fitz.open(file_path)
+    pdf: pymupdf = pymupdf.open(file_path)
 
     pts = []
     last_no = None
@@ -306,7 +306,7 @@ async def create_document(file: UploadFile = File(...),
             "document_id": result.id
         }
 
-    pdf = fitz.open(temp_path)
+    pdf = pymupdf.open(temp_path)
     page_count = len(pdf)
     pdf.close()
 

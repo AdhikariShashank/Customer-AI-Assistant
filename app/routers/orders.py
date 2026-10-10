@@ -3,6 +3,7 @@ from app.routers.dependencies import get_order_service
 from ..security import get_current_user
 
 from fastapi import APIRouter, Depends, status
+from ..core.exceptions import NotFoundException
 
 from app.schemas.common import SuccessResponse
 from app.schemas.order import (
@@ -52,6 +53,12 @@ async def get_order(
         user_id=current_user.id,
         order_id=order_id,
     )
+
+    if order is None:
+        raise NotFoundException(
+            message="Order not found",
+            code="ORDER_NOT_FOUND",
+        )
 
     return SuccessResponse(
         data=order,

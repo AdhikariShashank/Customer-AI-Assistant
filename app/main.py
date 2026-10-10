@@ -2,8 +2,21 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from .qdrant import initialize_qdrant
 from .db import create_tables
+from fastapi.exceptions import RequestValidationError
+from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.core.exceptions import AppException
+from app.core.exception_handlers import (
+    app_exception_handler,
+    validation_exception_handler,
+    http_exception_handler,
+    database_exception_handler,
+    unhandled_exception_handler,
+)
 
 from .routers import auth, documents, products, cart, user
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -15,9 +28,32 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan= lifespan)
 
 
-from .routers import auth, documents, products, cart
-
 # Keep your existing lifespan and FastAPI initialization.
+
+app.add_exception_handler(
+    AppException,
+    app_exception_handler,
+)
+
+app.add_exception_handler(
+    RequestValidationError,
+    validation_exception_handler,
+)
+
+app.add_exception_handler(
+    StarletteHTTPException,
+    http_exception_handler,
+)
+
+app.add_exception_handler(
+    SQLAlchemyError,
+    database_exception_handler,
+)
+
+app.add_exception_handler(
+    Exception,
+    unhandled_exception_handler,
+)
 
 app.include_router(auth.router)
 app.include_router(documents.router)

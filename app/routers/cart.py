@@ -30,10 +30,34 @@ async def get_cart(
         user_id=current_user.id
     )
 
-    return SuccessResponse(
-        data=cart,
-        message="Cart fetched successfully",
-    )
+    items = []
+
+    for item in cart.items:
+        product = item.product
+        unit_price = product.price
+
+        subtotal = product.price * item.quantity
+
+        items.append({
+            "id": item.id,
+            "product_id": item.product_id,
+            "product_name": product.name,
+            "unit_price": unit_price,
+            "quantity": item.quantity,
+            "subtotal": subtotal
+        })
+
+    total_amount = sum(item["subtotal"] for item in items)
+
+    return {
+    "message": "Cart fetched successfully",
+    "data": {
+        "id": cart.id,
+        "status": cart.status,
+        "items": items,
+        "total_amount": total_amount
+    }
+    }
 
 
 @router.post(
