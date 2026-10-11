@@ -5,6 +5,7 @@ from .db import create_tables
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+import logging
 
 from app.core.exceptions import AppException
 from app.core.exception_handlers import (
@@ -28,6 +29,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan= lifespan)
 
 
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 # Keep your existing lifespan and FastAPI initialization.
 
 app.add_exception_handler(
