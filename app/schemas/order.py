@@ -1,10 +1,11 @@
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class OrderItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     id: int
     product_id: int
     product_name: str
@@ -14,6 +15,7 @@ class OrderItemResponse(BaseModel):
 
 
 class OrderResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     id: int
     status: str
     total_amount: Decimal
@@ -22,5 +24,6 @@ class OrderResponse(BaseModel):
 
 
 class OrderListResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     items: list[OrderResponse]
     total: int

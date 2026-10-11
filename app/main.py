@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+
+from app.routers import orders
 from .qdrant import initialize_qdrant
 from .db import create_tables
 from fastapi.exceptions import RequestValidationError
@@ -65,7 +67,7 @@ app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(products.router)
 app.include_router(cart.router)
-# app.include_router(user.router)
+app.include_router(orders.router)
 
 @app.get("/health", tags=["health"])
 def health():   

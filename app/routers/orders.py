@@ -8,7 +8,7 @@ from ..core.exceptions import NotFoundException
 from app.schemas.common import SuccessResponse
 from app.schemas.order import (
     OrderListResponse,
-    OrderResponse,
+    OrderResponse
 )
 from app.services.order import OrderService
 
@@ -31,9 +31,14 @@ async def list_orders(
         user_id=current_user.id
     )
 
+    order_responses = [
+    OrderResponse.model_validate(order)
+    for order in orders
+    ]
+
     return SuccessResponse(
         data=OrderListResponse(
-            items=orders,
+            items=order_responses,
             total=total,
         ),
         message="Orders fetched successfully",
