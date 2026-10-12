@@ -83,26 +83,17 @@ async def add_cart_item(
         quantity=request.quantity,
     )
 
-    # for item in cart.items:
-    #     logger.info(
-    #         "Item: id=%s, product_id=%s, quantity=%s, unit_price=%s",
-    #         item.id,
-    #         item.product_id,
-    #         item.quantity,
-    #         item.unit_price,
-    #     )
+    for item in cart.items:
+        logger.info(
+            "Item: id=%s, product_id=%s, quantity=%s, unit_price=%s",
+            item.id,
+            item.product_id,
+            item.quantity,
+            item.unit_price
+        )
 
-    #     if item.product:
-    #         logger.info("Product name: %s", item.product.name)
-    
-    # CartResponse(id)
-    # class CartItemResponse(BaseModel):
-    # id: int
-    # product_id: int
-    # product_name: str
-    # quantity: int
-    # unit_price: Decimal
-    # subtotal: Decimal
+        if item.product:
+            logger.info("Product name: %s", item.product.name)
 
     items: list[CartItemResponse] = []
 
