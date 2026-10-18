@@ -234,7 +234,7 @@ class CartRepository:
                 update(CartItem)
                 .where(CartItem.id == item_id)
                 .values(
-                    quantity=CartItem.quantity + quantity
+                    quantity= quantity
                 )
                 .returning(CartItem.id)
             )
