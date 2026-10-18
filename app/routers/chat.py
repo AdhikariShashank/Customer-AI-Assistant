@@ -1,9 +1,13 @@
-from fastapi import APIRouter, HTTPException
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from langchain_core.messages import AIMessage
 
 from app.agent.graph import graph
+from app.models.user import User
 from app.schemas.common import SuccessResponse
+from app.security import get_current_user
 
 router = APIRouter(prefix="/api/v1/chat", tags=["Chat"])
 
@@ -15,18 +19,27 @@ class ChatResponse(BaseModel):
     response: str
 
 
+logger = logging.getLogger(__name__)
 
 @router.post("/", response_model=SuccessResponse[ChatResponse])
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, 
+               current_user: User = Depends(get_current_user)):
     try:
-        result = await graph.ainvoke({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": request.message,
+        result = await graph.ainvoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": request.message,
+                    }
+                ]
+            },
+            config={
+                "configurable": {
+                    "user_id": current_user.id,
                 }
-            ]
-        })
+            },
+        )
 
         messages = result["messages"]
 
@@ -53,8 +66,14 @@ async def chat(request: ChatRequest):
             message="Chat response generated successfully",
         )
 
-    except Exception as exc:
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "Chat endpoint failed for user_id=%s",
+            current_user.id,
+        )
         raise HTTPException(
             status_code=500,
             detail="Unable to process your message.",
-        ) from exc
+        )

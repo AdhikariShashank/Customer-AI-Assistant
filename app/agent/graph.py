@@ -6,11 +6,15 @@ from langgraph.graph import (
 )
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from app.tools.cart import create_cart_tools
 from app.tools.product import create_product_tools
-from app.tools.dependencies import product_service_context
+from app.tools.dependencies import cart_service_context, product_service_context
 
 
-tools = create_product_tools(product_service_context)
+tools = [
+    *create_product_tools(product_service_context),
+    *create_cart_tools(cart_service_context),
+]
 
 model = ChatOpenAI(model="gpt-4o-mini")
 model_with_tools = model.bind_tools(tools)
