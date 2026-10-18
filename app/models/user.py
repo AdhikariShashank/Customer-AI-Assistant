@@ -22,8 +22,9 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    cart = relationship(
-        "Cart", back_populates="user", uselist=False
+    carts = relationship(
+    "Cart",
+    back_populates="user",
     )
     orders = relationship("Order", back_populates="user")
     role: Mapped[str] = mapped_column(
