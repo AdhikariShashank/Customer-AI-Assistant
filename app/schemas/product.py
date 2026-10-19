@@ -26,6 +26,7 @@ class ProductListResponse(BaseModel):
     total: int
 
 
+
 class ProductSearchParams(BaseModel):
     query: str | None = None
     category: str | None = None
