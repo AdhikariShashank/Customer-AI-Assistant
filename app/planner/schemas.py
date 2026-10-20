@@ -7,11 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 Operation = Literal[
     "search_products",
     "get_product",
-    "get_cart",
-    "add_to_cart",
-    "remove_from_cart",
+    "get_active_cart",
+    "add_item",
+    "remove_item",
     "list_orders",
     "get_order",
+    "place_order"
 ]
 
 
@@ -77,3 +78,5 @@ class Plan(BaseModel):
                 )
 
         return self
+
+
