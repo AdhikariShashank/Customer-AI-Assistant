@@ -25,6 +25,7 @@ class Task(BaseModel):
         pattern=r"^task_[1-9][0-9]*$",
         description="Unique task ID, e.g. task_1.",
     )
+    
     operation: Operation = Field(
         description="An operation supported by the application.",
     )
