@@ -2,6 +2,7 @@
 import logging
 
 from app.core.exceptions import AppException
+from app.models.order import Order
 from app.repositories.order import OrderRepository
 
 
@@ -13,11 +14,11 @@ class OrderService:
         self.repository = repository
 
     async def list_orders(
-        self,
-        user_id: int,
-        limit: int = 20,
-        offset: int = 0,
-    ):
+    self,
+    user_id: int,
+    limit: int = 20,
+    offset: int = 0,
+    ) -> tuple[list[Order], int]:
         logger.info(
             "Listing orders: user_id=%s limit=%s offset=%s",
             user_id,
@@ -26,19 +27,21 @@ class OrderService:
         )
 
         try:
-            orders = await self.repository.list_by_user(
+            orders, total_count = await self.repository.list_by_user(
                 user_id=user_id,
                 limit=limit,
                 offset=offset,
             )
 
             logger.info(
-                "Orders retrieved successfully: user_id=%s count=%s",
+                "Orders retrieved successfully: "
+                "user_id=%s returned_count=%s total_count=%s",
                 user_id,
                 len(orders),
+                total_count,
             )
 
-            return orders
+            return orders, total_count
 
         except Exception:
             logger.exception(
