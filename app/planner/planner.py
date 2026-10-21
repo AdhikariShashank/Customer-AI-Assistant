@@ -35,6 +35,11 @@ class Planner:
         )
 
         self.chain = self.prompt | self.structured_model
+        
+# The important distinction
+# You have two different schemas working together:
+# - Operation catalog schema: Describes what each operation accepts, such as search_products(query, limit) or add_to_cart(product_id, quantity).
+# - Plan schema: Describes the structure of the plan itself, such as its list of tasks, operation names, arguments, and dependencies (depending on how you've defined your model).     
 
     def _build_operation_catalog(self) -> str:
         catalog = []
