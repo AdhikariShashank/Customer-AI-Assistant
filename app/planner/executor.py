@@ -10,9 +10,9 @@ class SequentialExecutor:
         self.registry = registry
 
     async def execute(self, plan: Plan) -> dict[str, Any]:
-        results = {}
+        results: dict[str, Any] = {}
 
-        # Phase 1 deliberately does not resolve runtime dependencies.
+        # Phase 1 does not support runtime dependencies.
         if any(task.depends_on for task in plan.tasks):
             raise ValueError(
                 "Plans with dependencies are not supported by "
@@ -27,9 +27,24 @@ class SequentialExecutor:
                     f"Unsupported operation: {task.operation}"
                 )
 
-            # LangChain tool instances expose ainvoke().
-            # The tool's factory/closure retains trusted context.
-            result = await spec.execute.ainvoke(task.arguments)
+            # Validate arguments against the operation's input schema.
+            validated_arguments = spec.arguments_schema.model_validate(
+                task.arguments
+            )
+
+            # Convert the validated model into a dictionary for the tool.
+            tool_arguments = validated_arguments.model_dump(
+                mode="json"
+            )
+
+            result = await spec.execute.ainvoke(tool_arguments)
+
+            # Require structured results for this phase.
+            if not isinstance(result, dict):
+                raise TypeError(
+                    f"Operation '{task.operation}' returned "
+                    f"{type(result).__name__}; expected dict."
+                )
 
             results[task.id] = {
                 "operation": task.operation,

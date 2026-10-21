@@ -1,5 +1,4 @@
 
-import json
 import logging
 from decimal import Decimal
 from typing import AsyncContextManager, Callable
@@ -131,7 +130,7 @@ def create_cart_tools(
         "get_active_cart",
         args_schema=EmptyCartInput,
     )
-    async def get_active_cart(config: RunnableConfig) -> str:
+    async def get_active_cart(config: RunnableConfig) -> dict:
         """Get the authenticated customer's active shopping cart.
 
         Use this when the customer asks to view their cart,
@@ -176,11 +175,11 @@ def create_cart_tools(
                     "No active cart returned: user_id=%s",
                     user_id,
                 )
-                return json.dumps({
+                return {
                     "ok": True,
                     "cart": None,
                     "message": "The customer has no active cart.",
-                })
+                }
 
             serialized_cart = _serialize_cart(cart)
 
@@ -190,20 +189,20 @@ def create_cart_tools(
                 cart.id,
             )
 
-            return json.dumps({
+            return {
                 "ok": True,
                 "cart": serialized_cart,
-            })
+            }
 
         except Exception:
             logger.exception("Tool failed: get_active_cart")
-            return json.dumps({
+            return {
                 "ok": False,
                 "error": {
                     "code": "GET_CART_FAILED",
                     "message": "Unable to retrieve the cart.",
                 },
-            })
+            }
 
     @tool(
         "add_item",
@@ -213,7 +212,7 @@ def create_cart_tools(
         product_id: int,
         quantity: int,
         config: RunnableConfig,
-    ) -> str:
+    ) -> dict:
         """Add a product to the authenticated customer's cart.
 
         Use this when the customer explicitly asks to add a product.
@@ -282,11 +281,11 @@ def create_cart_tools(
                 cart.id if cart else None,
             )
 
-            return json.dumps({
+            return {
                 "ok": True,
                 "message": "Product added to cart successfully.",
                 "cart": serialized_cart,
-            })
+            }
 
         except Exception:
             logger.exception(
@@ -294,7 +293,7 @@ def create_cart_tools(
                 product_id,
                 quantity,
             )
-            return json.dumps({
+            return {
                 "ok": False,
                 "error": {
                     "code": "ADD_CART_ITEM_FAILED",
@@ -303,7 +302,7 @@ def create_cart_tools(
                         "Check product availability and try again."
                     ),
                 },
-            })
+            }
 
     @tool(
         "remove_item",
@@ -312,7 +311,7 @@ def create_cart_tools(
     async def remove_item(
         item_id: int,
         config: RunnableConfig,
-    ) -> str:
+    ) -> dict:
         """Remove an item from the authenticated customer's cart.
 
         Use this when the customer explicitly asks to remove a cart item.
@@ -375,24 +374,24 @@ def create_cart_tools(
                 item_id,
             )
 
-            return json.dumps({
+            return {
                 "ok": True,
                 "message": "Item removed from cart successfully.",
                 "cart": serialized_cart,
-            })
+            }
 
         except Exception:
             logger.exception(
                 "Tool failed: remove_item item_id=%s",
                 item_id,
             )
-            return json.dumps({
+            return {
                 "ok": False,
                 "error": {
                     "code": "REMOVE_CART_ITEM_FAILED",
                     "message": "Unable to remove the item from the cart.",
                 },
-            })
+            }
 
     logger.info(
         "Cart tools created: get_active_cart, add_item, remove_item"

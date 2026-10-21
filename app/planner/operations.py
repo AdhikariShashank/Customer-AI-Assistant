@@ -15,6 +15,7 @@ class OperationSpec:
     arguments_schema: type[BaseModel]
     execute: Callable[..., Any]
     access: str  # "read" or "write"
+    output_description: str
 
 
 def build_operation_registry(

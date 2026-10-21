@@ -1,4 +1,4 @@
-import json
+
 import logging
 from decimal import Decimal
 from typing import AsyncContextManager, Callable
@@ -73,7 +73,7 @@ def create_product_tools(
         max_price: Decimal | None = None,
         limit: int = 10,
         offset: int = 0,
-    ) -> str:
+    ) -> dict:
         """Search active catalog products by keyword, category, or price."""
 
         logger.info(
@@ -138,7 +138,7 @@ def create_product_tools(
                 ]
 
             logger.debug(
-                "search_products: product data serialization completed"
+                "search_products: product data preparation completed"
             )
 
             result = {
@@ -169,8 +169,6 @@ def create_product_tools(
                 },
             }
 
-            output = json.dumps(result, ensure_ascii=False)
-
             logger.info(
                 "Tool completed: search_products | returned=%d "
                 "total=%d has_more=%s",
@@ -179,14 +177,12 @@ def create_product_tools(
                 result["pagination"]["has_more"],
             )
 
-            return output
+            return result
 
         except Exception:
-            logger.exception(
-                "Tool failed: search_products"
-            )
+            logger.exception("Tool failed: search_products")
 
-            return json.dumps({
+            return {
                 "ok": False,
                 "error": {
                     "code": "PRODUCT_SEARCH_UNAVAILABLE",
@@ -195,10 +191,10 @@ def create_product_tools(
                         "Please try again later."
                     ),
                 },
-            })
+            }
 
     @tool("get_product", args_schema=GetProductInput)
-    async def get_product(product_id: int) -> str:
+    async def get_product(product_id: int) -> dict:
         """Retrieve a single product by its unique ID."""
 
         logger.info(
@@ -230,7 +226,7 @@ def create_product_tools(
                         filters.product_id,
                     )
 
-                    return json.dumps({
+                    return {
                         "ok": False,
                         "error": {
                             "code": "PRODUCT_NOT_FOUND",
@@ -239,7 +235,7 @@ def create_product_tools(
                                 "was not found."
                             ),
                         },
-                    })
+                    }
 
                 # Convert ORM object while the session is open
                 product_data = {
@@ -257,17 +253,17 @@ def create_product_tools(
                 filters.product_id,
             )
 
-            output = json.dumps({
+            result = {
                 "ok": True,
                 "product": product_data,
-            }, ensure_ascii=False)
+            }
 
             logger.info(
                 "Tool completed: get_product | product_id=%s",
                 filters.product_id,
             )
 
-            return output
+            return result
 
         except Exception:
             logger.exception(
@@ -275,7 +271,7 @@ def create_product_tools(
                 product_id,
             )
 
-            return json.dumps({
+            return {
                 "ok": False,
                 "error": {
                     "code": "PRODUCT_RETRIEVAL_UNAVAILABLE",
@@ -284,7 +280,7 @@ def create_product_tools(
                         "Please try again later."
                     ),
                 },
-            })
+            }
 
     logger.info(
         "Product tools initialized: search_products, get_product"

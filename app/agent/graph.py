@@ -48,6 +48,45 @@ tools_by_name = {tool.name: tool for tool in tools}
 # These names must match your actual tool names.
 # Replace the names below if your tools use different names.
 
+
+tools = [
+    *create_product_tools(product_service_context),
+    *create_cart_tools(cart_service_context),
+    *create_order_tools(order_service_context),
+]
+
+tools_by_name = {tool.name: tool for tool in tools}
+
+
+output_descriptions = {
+    "search_products": (
+        "Returns a dictionary containing a products list. "
+        "Each product contains id, name, and price. "
+        "Example product ID path: products[0].id."
+    ),
+    "get_product": (
+        "Returns one product containing id, name, and price."
+    ),
+    "get_active_cart": (
+        "Returns the user's active cart and its items."
+    ),
+    "add_item": (
+        "Returns the updated cart and its items."
+    ),
+    "remove_item": (
+        "Returns the updated cart and its items."
+    ),
+    "list_orders": (
+        "Returns a list of the user's orders."
+    ),
+    "get_order": (
+        "Returns one order and its details."
+    ),
+    "place_order": (
+        "Returns the placed order and its details."
+    ),
+}
+
 OPERATION_ACCESS = {
     "search_products": "read",
     "get_product": "read",
@@ -65,15 +104,23 @@ if missing:
         f"Planner operations missing from tool list: {sorted(missing)}"
     )
 
+missing_descriptions = set(OPERATION_ACCESS) - set(output_descriptions)
+if missing_descriptions:
+    raise RuntimeError(
+        f"Missing output descriptions: {sorted(missing_descriptions)}"
+    )
+
 registry = {
     name: OperationSpec(
         name=name,
         arguments_schema=tools_by_name[name].args_schema,
         execute=tools_by_name[name],
         access=access,
+        output_description=output_descriptions[name],
     )
     for name, access in OPERATION_ACCESS.items()
 }
+
 
 
 # --------------------------------------------------

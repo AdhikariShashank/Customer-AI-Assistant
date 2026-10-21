@@ -1,5 +1,4 @@
 
-import json
 import logging
 from datetime import date, datetime
 from decimal import Decimal
@@ -144,7 +143,7 @@ def create_order_tools(
     """Create LangChain tools backed by the existing OrderService."""
 
     @tool("list_orders", args_schema=EmptyOrderInput)
-    async def list_orders(config: RunnableConfig) -> str:
+    async def list_orders(config: RunnableConfig) -> dict:
         """List the authenticated customer's orders."""
 
         try:
@@ -217,31 +216,31 @@ def create_order_tools(
                 len(serialized_orders),
             )
 
-            return json.dumps({
+            return {
                 "ok": True,
                 "orders": serialized_orders,
                 "count": len(serialized_orders),
                 "total_count": total_count,
-            })
+            }
 
         except Exception:
             logger.exception(
                 "Failed to list orders for authenticated customer."
             )
 
-            return json.dumps({
+            return {
                 "ok": False,
                 "error": {
                     "code": "LIST_ORDERS_FAILED",
                     "message": "Unable to retrieve your orders.",
                 },
-            })
+            }
 
     @tool("get_order", args_schema=GetOrderInput)
     async def get_order(
         order_id: int,
         config: RunnableConfig,
-    ) -> str:
+    ) -> dict:
         """Retrieve a specific order belonging to the authenticated customer."""
 
         try:
@@ -272,11 +271,11 @@ def create_order_tools(
                     order_id,
                 )
 
-                return json.dumps({
+                return {
                     "ok": True,
                     "order": None,
                     "message": "Order not found.",
-                })
+                }
 
             serialized_order = _serialize_order(order)
 
@@ -287,10 +286,10 @@ def create_order_tools(
                 order_id,
             )
 
-            return json.dumps({
+            return {
                 "ok": True,
                 "order": serialized_order,
-            })
+            }
 
         except Exception:
             logger.exception(
@@ -298,7 +297,7 @@ def create_order_tools(
                 order_id,
             )
 
-            return json.dumps({
+            return {
                 "ok": False,
                 "error": {
                     "code": "GET_ORDER_FAILED",
@@ -306,10 +305,10 @@ def create_order_tools(
                         "Unable to retrieve the requested order."
                     ),
                 },
-            })
+            }
 
     @tool("place_order", args_schema=EmptyOrderInput)
-    async def place_order(config: RunnableConfig) -> str:
+    async def place_order(config: RunnableConfig) -> dict:
         """Place an order using the authenticated customer's cart."""
 
         try:
@@ -331,7 +330,7 @@ def create_order_tools(
                     user_id,
                 )
 
-                return json.dumps({
+                return {
                     "ok": False,
                     "error": {
                         "code": "ORDER_CREATION_FAILED",
@@ -340,7 +339,7 @@ def create_order_tools(
                             "Please check your cart."
                         ),
                     },
-                })
+                }
 
             logger.info(
                 "Order service result: order_id=%s result_type=%s",
@@ -357,18 +356,18 @@ def create_order_tools(
                 order.id,
             )
 
-            return json.dumps({
+            return {
                 "ok": True,
                 "message": "Order placed successfully.",
                 "order": serialized_order,
-            })
+            }
 
         except Exception:
             logger.exception(
                 "Failed to place order for authenticated customer."
             )
 
-            return json.dumps({
+            return {
                 "ok": False,
                 "error": {
                     "code": "PLACE_ORDER_FAILED",
@@ -377,7 +376,7 @@ def create_order_tools(
                         "Please check your cart and try again."
                     ),
                 },
-            })
+            }
 
     return [
         list_orders,
