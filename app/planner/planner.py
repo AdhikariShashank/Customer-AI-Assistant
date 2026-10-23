@@ -1,12 +1,15 @@
-
 import json
+import logging
 
+from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
 from app.planner.prompts import SYSTEM_PROMPT
 from app.planner.schemas import Plan
 from app.planner.operations import OperationSpec
+
+logger = logging.getLogger(__name__)
 
 
 class Planner:
@@ -19,7 +22,7 @@ class Planner:
 
         self.prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", SYSTEM_PROMPT),
+                SystemMessage(content=SYSTEM_PROMPT),
                 (
                     "human",
                     "User request:\n{user_request}\n\n"
@@ -30,16 +33,11 @@ class Planner:
         )
 
         self.structured_model = model.with_structured_output(
-          Plan,
-          method="function_calling",
+            Plan,
+            method="function_calling",
         )
 
         self.chain = self.prompt | self.structured_model
-        
-# The important distinction
-# You have two different schemas working together:
-# - Operation catalog schema: Describes what each operation accepts, such as search_products(query, limit) or add_to_cart(product_id, quantity).
-# - Plan schema: Describes the structure of the plan itself, such as its list of tasks, operation names, arguments, and dependencies (depending on how you've defined your model).     
 
     def _build_operation_catalog(self) -> str:
         catalog = []
@@ -49,7 +47,10 @@ class Planner:
                 {
                     "operation": name,
                     "access": spec.access,
-                    "arguments_schema": spec.arguments_schema.model_json_schema(),
+                    "arguments_schema": (
+                        spec.arguments_schema.model_json_schema()
+                    ),
+                    "output_description": spec.output_description,
                 }
             )
 
@@ -59,9 +60,43 @@ class Planner:
         if not user_request or not user_request.strip():
             raise ValueError("User request cannot be empty.")
 
-        return await self.chain.ainvoke(
-            {
-                "user_request": user_request.strip(),
-                "operation_catalog": self._build_operation_catalog(),
-            }
+        logger.info(
+            "planner.plan_generation_started request_length=%d",
+            len(user_request),
         )
+
+        try:
+            plan = await self.chain.ainvoke(
+                {
+                    "user_request": user_request.strip(),
+                    "operation_catalog": self._build_operation_catalog(),
+                }
+            )
+
+            logger.info(
+                "planner.plan_generation_succeeded goal=%r task_count=%d",
+                plan.goal,
+                len(plan.tasks),
+            )
+
+            for task in plan.tasks:
+                logger.info(
+                    "planner.proposed_task task_id=%s operation=%s "
+                    "dependencies=%s input_refs=%s",
+                    task.id,
+                    task.operation,
+                    task.depends_on,
+                    {
+                        name: {
+                            "task_id": ref.task_id,
+                            "path": ref.path,
+                        }
+                        for name, ref in task.input_refs.items()
+                    },
+                )
+
+            return plan
+
+        except Exception:
+            logger.exception("planner.plan_generation_failed")
+            raise

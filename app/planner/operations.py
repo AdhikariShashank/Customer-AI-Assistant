@@ -29,6 +29,7 @@ def build_operation_registry(
     get_order,
     place_order,
     schemas: dict[str, type[BaseModel]],
+    output_descriptions: dict[str, str],
 ) -> dict[str, OperationSpec]:
     """Build an allowlisted registry using existing tool instances."""
 
@@ -46,12 +47,16 @@ def build_operation_registry(
     if set(schemas) != set(bindings):
         raise ValueError("Every registered operation needs an argument schema.")
 
+    if set(output_descriptions) != set(bindings):
+        raise ValueError("Every registered operation needs an output description.")
+
     return {
         name: OperationSpec(
             name=name,
             arguments_schema=schemas[name],
             execute=tool,
             access=access,
+            output_description=output_descriptions[name],
         )
         for name, (tool, access) in bindings.items()
     }

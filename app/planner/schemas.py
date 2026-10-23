@@ -1,7 +1,14 @@
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 Operation = Literal[
@@ -19,54 +26,61 @@ Operation = Literal[
 class OutputReference(BaseModel):
     """Reference to a value produced by an earlier task."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     task_id: str = Field(
         pattern=r"^task_[1-9][0-9]*$",
-        description="ID of the task that produces the required value.",
+        description="ID of the task producing the required value.",
     )
-
-    path: list[str | int] = Field(
+    path: str = Field(
         min_length=1,
+        max_length=200,
         description=(
-            "Path to the output value, e.g. "
-            '["products", 0, "id"].'
+            "Dot-separated path to a value in the task result, "
+            "e.g. products.0.id"
         ),
     )
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        parts = value.split(".")
+
+        if any(not part for part in parts):
+            raise ValueError("Reference path contains an empty segment.")
+
+        for part in parts:
+            if part.isdigit():
+                continue
+
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part):
+                raise ValueError(f"Invalid reference path segment: {part}")
+
+        return value
+
 
 class Task(BaseModel):
     """One proposed operation in an execution plan."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    id: str = Field(
-        pattern=r"^task_[1-9][0-9]*$",
-        description="Unique task ID, e.g. task_1.",
-    )
-    
-    operation: Operation = Field(
-        description="An operation supported by the application.",
-    )
-    description: str = Field(
-        min_length=1,
-        max_length=300,
-        description="A concise explanation of the task.",
-    )
-    arguments: dict[str, Any] = Field(
+    id: str = Field(pattern=r"^task_[1-9][0-9]*$")
+    operation: Operation
+    description: str = Field(min_length=1, max_length=300)
+
+    # Values already known during planning.
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+    # Tool arguments populated from prior task results.
+    input_refs: dict[str, OutputReference] = Field(
         default_factory=dict,
-        description="Arguments required by the selected operation.",
-    )
-    depends_on: list[str] = Field(
-        default_factory=list,
-        description="IDs of prerequisite tasks. Empty in basic Phase 1 plans.",
+        description=(
+            "Maps a tool argument name to a value produced by another task."
+        ),
     )
 
-    input_refs: dict[str, OutputReference] = Field(
-    default_factory=dict,
-    description=(
-        "Mappings from argument names to outputs of prerequisite tasks."
-    ),
-)
+    # All task prerequisites, including those implied by input_refs.
+    depends_on: list[str] = Field(default_factory=list)
 
     @field_validator("depends_on")
     @classmethod
@@ -74,6 +88,18 @@ class Task(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("Duplicate dependency IDs are not allowed.")
         return value
+
+    @model_validator(mode="after")
+    def validate_argument_mapping(self):
+        overlap = set(self.arguments) & set(self.input_refs)
+
+        if overlap:
+            raise ValueError(
+                "Arguments cannot be both literal and referenced: "
+                f"{sorted(overlap)}"
+            )
+
+        return self
 
 
 class Plan(BaseModel):
@@ -84,25 +110,21 @@ class Plan(BaseModel):
     goal: str = Field(min_length=1, max_length=500)
     tasks: list[Task] = Field(min_length=1, max_length=20)
 
-    
     @model_validator(mode="after")
     def validate_task_ids_and_dependencies(self):
-        tasks_by_id = {task.id: task for task in self.tasks}
+        task_ids = [task.id for task in self.tasks]
 
-        if len(tasks_by_id) != len(self.tasks):
+        if len(task_ids) != len(set(task_ids)):
             raise ValueError("Task IDs must be unique.")
 
-        known_ids = set(tasks_by_id)
+        task_by_id = {task.id: task for task in self.tasks}
+        known_ids = set(task_by_id)
 
         for task in self.tasks:
-            dependencies = set(task.depends_on)
+            if task.id in task.depends_on:
+                raise ValueError(f"{task.id} cannot depend on itself.")
 
-            if task.id in dependencies:
-                raise ValueError(
-                    f"{task.id} cannot depend on itself."
-                )
-
-            unknown = dependencies - known_ids
+            unknown = set(task.depends_on) - known_ids
             if unknown:
                 raise ValueError(
                     f"{task.id} references unknown dependencies: "
@@ -110,48 +132,57 @@ class Plan(BaseModel):
                 )
 
             for argument_name, reference in task.input_refs.items():
-                if argument_name in task.arguments:
-                    raise ValueError(
-                        f"{task.id}: '{argument_name}' cannot appear "
-                        "in both arguments and input_refs."
-                    )
-
                 if reference.task_id not in known_ids:
                     raise ValueError(
-                        f"{task.id} references unknown producer "
-                        f"'{reference.task_id}'."
+                        f"{task.id}.{argument_name} references unknown "
+                        f"task {reference.task_id}"
                     )
 
-                if reference.task_id not in dependencies:
+                if reference.task_id == task.id:
                     raise ValueError(
-                        f"{task.id} must declare '{reference.task_id}' "
+                        f"{task.id} cannot reference its own output."
+                    )
+
+                if reference.task_id not in task.depends_on:
+                    raise ValueError(
+                        f"{task.id} must include {reference.task_id} "
                         "in depends_on when referencing its output."
                     )
 
-        # Detect cycles in the dependency graph.
+        # Detect cycles, including dependencies not represented by input_refs.
+        visiting: set[str] = set()
         visited: set[str] = set()
-        active: set[str] = set()
 
         def visit(task_id: str) -> None:
-            if task_id in active:
+            if task_id in visiting:
                 raise ValueError(
-                    f"Dependency cycle detected at {task_id}."
+                    f"Dependency cycle detected involving {task_id}"
                 )
 
             if task_id in visited:
                 return
 
-            active.add(task_id)
+            visiting.add(task_id)
 
-            for dependency_id in tasks_by_id[task_id].depends_on:
+            for dependency_id in task_by_id[task_id].depends_on:
                 visit(dependency_id)
 
-            active.remove(task_id)
+            visiting.remove(task_id)
             visited.add(task_id)
 
-        for task_id in tasks_by_id:
+        for task_id in task_ids:
             visit(task_id)
 
+        # Phase 2 keeps execution sequential in plan order.
+        # Require prerequisites to appear before their dependents.
+        position = {task_id: i for i, task_id in enumerate(task_ids)}
+
+        for task in self.tasks:
+            for dependency_id in task.depends_on:
+                if position[dependency_id] >= position[task.id]:
+                    raise ValueError(
+                        f"{dependency_id} must appear before {task.id} "
+                        "in the Phase 2 sequential plan."
+                    )
+
         return self
-
-
