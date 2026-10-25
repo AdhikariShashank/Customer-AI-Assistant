@@ -41,6 +41,22 @@ class OutputReference(BaseModel):
         ),
     )
 
+    # Optional: match one item in a list by a field and value.
+    select_by: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional selector with 'field' and 'value' keys "
+            "for matching exactly one item in a list."
+        ),
+    )
+
+    # Optional: extract a field from the matched item.
+    select_field: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Field path to extract from the matched item.",
+    )
+
     @field_validator("path")
     @classmethod
     def validate_path(cls, value: str) -> str:
