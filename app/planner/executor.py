@@ -216,11 +216,19 @@ class SequentialExecutor:
                     pformat(result, sort_dicts=False),
                 )
 
-                logger.info(
-                    "planner.task_executed operation=%s result=%s",
-                    task.operation,
-                    result,
-                )
+                if isinstance(result, dict) and result.get("ok") is False:
+                    logger.warning(
+                        "planner.task_failed task_id=%s operation=%s error=%s",
+                        task.id,
+                        task.operation,
+                        result.get("error"),
+                    )
+                else:
+                    logger.info(
+                        "planner.task_succeeded task_id=%s operation=%s",
+                        task.id,
+                        task.operation,
+                    )
 
                 # Store the raw tool result for downstream references.
                 results[task.id] = result
