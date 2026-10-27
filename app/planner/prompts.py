@@ -109,18 +109,19 @@ DIRECT OUTPUT-REFERENCE EXAMPLE
 If task_2 needs the first product ID returned by task_1, use:
 
 {
-  "id": "task_2",
-  "operation": "add_item",
-  "arguments": {
-    "quantity": 1
-  },
-  "input_refs": {
-    "product_id": {
-      "task_id": "task_1",
-      "path": "products.0.id"
-    }
-  },
-  "depends_on": ["task_1"]
+    "id": "task_2",
+    "operation": "add_item",
+    "description": "Add one unit of the selected product to the cart.",
+    "arguments": {
+        "quantity": 1
+    },
+    "input_refs": {
+        "product_id": {
+            "task_id": "task_1",
+            "path": "products.0.id"
+        }
+    },
+    "depends_on": ["task_1"]
 }
 
 
@@ -226,4 +227,27 @@ For a dependent task:
   },
   "depends_on": ["task_1"]
 }
+
+
+STRICT PLAN VALIDITY RULES
+
+1. Every item in `tasks` must be a complete Task object.
+   Never include standalone strings, fragments, comments, or partial fields
+   inside the tasks list.
+
+2. Every task must include all required fields:
+   id, operation, description, arguments, input_refs, depends_on.
+
+3. If a task uses an output from another task through `input_refs`,
+   the source task ID MUST also appear in `depends_on`.
+
+4. Create the complete plan before execution. Do not invent output values
+   that will only become available after a task executes.
+
+5. Before returning the plan, verify that:
+   - Every task follows the Task schema.
+   - Every dependency references an existing task.
+   - Every input reference has a corresponding dependency.
+   - The task order respects all dependencies.
+   - No task contains malformed or incomplete fields.
 """
