@@ -1,12 +1,15 @@
 
+import asyncio
 import json
 import logging
+from pprint import pformat
 from typing import Any
+
 from app.planner.exceptions import TaskExecutionError
 from app.planner.operations import OperationSpec
 from app.planner.scheduler import DependencyAwareScheduler
 from app.planner.schemas import OutputReference, Plan, Task
-from pprint import pformat
+
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +40,12 @@ def get_output_path(value: Any, path: str) -> Any:
             # Support Pydantic models and similar objects with fields.
             if hasattr(current, "model_dump"):
                 current = current.model_dump()
+
                 if part not in current:
                     raise KeyError(
                         f"Output field {part!r} not found"
                     )
+
                 current = current[part]
 
             elif hasattr(current, part):
@@ -53,11 +58,12 @@ def get_output_path(value: Any, path: str) -> Any:
 
     return current
 
+
 def resolve_input_reference(
     reference: OutputReference,
     completed_results: dict[str, Any],
 ) -> Any:
-    """Resolve a normal output path or select an item from a list."""
+    """Resolve an output path and optional list-item selection."""
 
     if reference.task_id not in completed_results:
         raise TaskExecutionError(
@@ -96,9 +102,12 @@ def resolve_input_reference(
 
             value = matches[0]
 
-        # Optionally extract a field from the matched item.
+        # Optionally extract a field from the selected item.
         if reference.select_field is not None:
-            value = get_output_path(value, reference.select_field)
+            value = get_output_path(
+                value,
+                reference.select_field,
+            )
 
         return value
 
@@ -108,15 +117,25 @@ def resolve_input_reference(
             f"{reference.task_id}.{reference.path}: {exc}"
         ) from exc
 
+
 class SequentialExecutor:
-    def __init__(self, registry: dict[str, OperationSpec]):
+    """Execute dependency-aware batches with parallel task execution."""
+
+    def __init__(
+        self,
+        registry: dict[str, OperationSpec],
+        max_batch_size: int = 5,
+    ):
         self.registry = registry
+        self.max_batch_size = max_batch_size
 
     def _resolve_arguments(
         self,
         task: Task,
         completed_results: dict[str, Any],
     ) -> dict[str, Any]:
+        """Resolve runtime references and merge them with literal arguments."""
+
         resolved = dict(task.arguments)
 
         for argument_name, reference in task.input_refs.items():
@@ -129,17 +148,15 @@ class SequentialExecutor:
 
             logger.info(
                 "planner.reference_resolved task_id=%s argument=%s "
-                "source_task_id=%s source_path=%s value=%r",
+                "source_task_id=%s source_path=%s",
                 task.id,
                 argument_name,
                 reference.task_id,
                 reference.path,
-                value,
             )
 
         return resolved
 
-    
     @staticmethod
     def _result_indicates_failure(result: Any) -> bool:
         """Recognize structured tool failures, including JSON strings."""
@@ -160,9 +177,156 @@ class SequentialExecutor:
 
         return False
 
+    async def _execute_one(
+        self,
+        task: Task,
+        completed_results: dict[str, Any],
+    ) -> tuple[str, Any, bool]:
+        """
+        Execute one task independently.
+
+        Returns:
+            (task_id, result, failed)
+
+        This method does not mutate scheduler statuses or the shared
+        completed-results dictionary.
+        """
+
+        logger.info(
+            "planner.task_started task_id=%s operation=%s",
+            task.id,
+            task.operation,
+        )
+
+        try:
+            spec = self.registry[task.operation]
+
+            logger.debug(
+                "planner.task_input task_id=%s arguments=%s input_refs=%s",
+                task.id,
+                pformat(task.arguments, sort_dicts=False),
+                pformat(task.input_refs, sort_dicts=False),
+            )
+
+            # Read references only from previously completed batches.
+            arguments = self._resolve_arguments(
+                task=task,
+                completed_results=completed_results,
+            )
+
+            logger.debug(
+                "planner.task_resolved_arguments "
+                "task_id=%s arguments=%s",
+                task.id,
+                pformat(arguments, sort_dicts=False),
+            )
+
+            validated = spec.arguments_schema.model_validate(arguments)
+            validated_arguments = validated.model_dump(mode="python")
+
+            logger.debug(
+                "planner.task_validated_arguments "
+                "task_id=%s arguments=%s",
+                task.id,
+                pformat(validated_arguments, sort_dicts=False),
+            )
+
+            result = await spec.execute.ainvoke(validated_arguments)
+            failed = self._result_indicates_failure(result)
+
+            logger.info(
+                "planner.task_output task_id=%s operation=%s "
+                "output_type=%s failed=%s output=%s",
+                task.id,
+                task.operation,
+                type(result).__name__,
+                failed,
+                pformat(result, sort_dicts=False),
+            )
+
+            return task.id, result, failed
+
+        except Exception as exc:
+            logger.exception(
+                "planner.task_execution_exception "
+                "task_id=%s operation=%s",
+                task.id,
+                task.operation,
+            )
+
+            return (
+                task.id,
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+                True,
+            )
+
+    async def _execute_batch(
+        self,
+        batch: list[Task],
+        completed_results: dict[str, Any],
+        scheduler: DependencyAwareScheduler,
+        batch_number: int,
+    ) -> None:
+        """Execute every task in a selected batch concurrently."""
+
+        logger.info(
+            "planner.executor_parallel_batch_started "
+            "batch_number=%d task_ids=%s batch_size=%d",
+            batch_number,
+            [task.id for task in batch],
+            len(batch),
+        )
+
+        # Each task reads completed_results but does not mutate it.
+        # gather preserves result ordering relative to the input awaitables.
+        outcomes = await asyncio.gather(
+            *[
+                self._execute_one(
+                    task=task,
+                    completed_results=completed_results,
+                )
+                for task in batch
+            ]
+        )
+
+        # Only update shared results and scheduler statuses after all
+        # tasks in this batch have finished.
+        for task_id, result, failed in outcomes:
+            completed_results[task_id] = result
+
+            if failed:
+                scheduler.mark_failed(task_id)
+
+                logger.warning(
+                    "planner.executor_reported_failure "
+                    "task_id=%s operation=%s",
+                    task_id,
+                    scheduler.tasks[task_id].operation,
+                )
+            else:
+                scheduler.mark_succeeded(task_id)
+
+                logger.info(
+                    "planner.executor_reported_success "
+                    "task_id=%s operation=%s",
+                    task_id,
+                    scheduler.tasks[task_id].operation,
+                )
+
+        logger.info(
+            "planner.executor_parallel_batch_finished "
+            "batch_number=%d task_ids=%s statuses=%s",
+            batch_number,
+            [task.id for task in batch],
+            scheduler.statuses,
+        )
 
     async def execute(self, plan: Plan) -> dict[str, Any]:
-        """Schedule safe batches and execute tasks sequentially per batch."""
+        """Schedule safe batches and execute each batch concurrently."""
 
         logger.info(
             "planner.execution_started task_count=%d",
@@ -172,10 +336,11 @@ class SequentialExecutor:
         scheduler = DependencyAwareScheduler(
             plan=plan,
             registry=self.registry,
-            max_batch_size=5,
+            max_batch_size=self.max_batch_size,
         )
 
         results: dict[str, Any] = {}
+        batch_number = 0
 
         logger.info(
             "planner.executor_scheduler_created task_ids=%s "
@@ -184,8 +349,6 @@ class SequentialExecutor:
             scheduler.statuses,
             scheduler.prerequisites,
         )
-
-        batch_number = 0
 
         while True:
             logger.info(
@@ -215,122 +378,11 @@ class SequentialExecutor:
                 [task.operation for task in batch],
             )
 
-            # Stage A: tasks in the selected batch still execute sequentially.
-            for position, task in enumerate(batch, start=1):
-                logger.info(
-                    "planner.task_started batch_number=%d "
-                    "batch_position=%d batch_size=%d "
-                    "task_id=%s operation=%s dependencies=%s",
-                    batch_number,
-                    position,
-                    len(batch),
-                    task.id,
-                    task.operation,
-                    task.depends_on,
-                )
-
-                try:
-                    spec = self.registry[task.operation]
-
-                    logger.debug(
-                        "planner.task_input task_id=%s "
-                        "arguments=%s input_refs=%s",
-                        task.id,
-                        pformat(task.arguments, sort_dicts=False),
-                        pformat(task.input_refs, sort_dicts=False),
-                    )
-
-                    arguments = self._resolve_arguments(
-                        task=task,
-                        completed_results=results,
-                    )
-
-                    logger.debug(
-                        "planner.task_resolved_arguments "
-                        "task_id=%s arguments=%s",
-                        task.id,
-                        pformat(arguments, sort_dicts=False),
-                    )
-
-                    validated = spec.arguments_schema.model_validate(arguments)
-                    validated_arguments = validated.model_dump(mode="python")
-
-                    logger.debug(
-                        "planner.task_validated_arguments "
-                        "task_id=%s arguments=%s",
-                        task.id,
-                        pformat(validated_arguments, sort_dicts=False),
-                    )
-
-                    result = await spec.execute.ainvoke(validated_arguments)
-
-                    results[task.id] = result
-
-                    logger.info(
-                        "planner.task_output task_id=%s operation=%s "
-                        "output_type=%s output=%s",
-                        task.id,
-                        task.operation,
-                        type(result).__name__,
-                        pformat(result, sort_dicts=False),
-                    )
-
-                    if self._result_indicates_failure(result):
-                        scheduler.mark_failed(task.id)
-
-                        logger.warning(
-                            "planner.executor_reported_failure "
-                            "task_id=%s operation=%s "
-                            "scheduler_status=%s",
-                            task.id,
-                            task.operation,
-                            scheduler.statuses[task.id],
-                        )
-
-                    else:
-                        scheduler.mark_succeeded(task.id)
-
-                        logger.info(
-                            "planner.executor_reported_success "
-                            "task_id=%s operation=%s "
-                            "scheduler_status=%s",
-                            task.id,
-                            task.operation,
-                            scheduler.statuses[task.id],
-                        )
-
-                except Exception as exc:
-                    scheduler.mark_failed(task.id)
-
-                    results[task.id] = {
-                        "ok": False,
-                        "error": str(exc),
-                        "error_type": type(exc).__name__,
-                    }
-
-                    logger.exception(
-                        "planner.task_execution_exception "
-                        "task_id=%s operation=%s "
-                        "scheduler_status=%s",
-                        task.id,
-                        task.operation,
-                        scheduler.statuses[task.id],
-                    )
-
-                logger.debug(
-                    "planner.executor_state_after_task "
-                    "task_id=%s current_statuses=%s result_task_ids=%s",
-                    task.id,
-                    pformat(scheduler.statuses, sort_dicts=False),
-                    list(results.keys()),
-                )
-
-            logger.info(
-                "planner.executor_batch_finished batch_number=%d "
-                "task_ids=%s current_statuses=%s",
-                batch_number,
-                [task.id for task in batch],
-                scheduler.statuses,
+            await self._execute_batch(
+                batch=batch,
+                completed_results=results,
+                scheduler=scheduler,
+                batch_number=batch_number,
             )
 
         # Preserve skipped-task information in the returned results.
@@ -351,8 +403,7 @@ class SequentialExecutor:
 
         logger.info(
             "planner.execution_finished task_count=%d "
-            "result_count=%d final_statuses=%s",
-            "total_batches=%d ",
+            "result_count=%d final_statuses=%s total_batches=%d",
             len(plan.tasks),
             len(results),
             scheduler.statuses,
@@ -365,4 +416,3 @@ class SequentialExecutor:
         )
 
         return results
-
