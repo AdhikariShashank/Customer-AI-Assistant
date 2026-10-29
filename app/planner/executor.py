@@ -9,6 +9,12 @@ from app.planner.exceptions import TaskExecutionError
 from app.planner.operations import OperationSpec
 from app.planner.scheduler import DependencyAwareScheduler
 from app.planner.schemas import OutputReference, Plan, Task
+from app.governance.context_builder import GovernanceContextBuilder
+from app.governance.engine import GovernanceEngine
+from app.governance.schemas import (
+    GovernanceDecision,
+    PolicyContext,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -125,9 +131,82 @@ class SequentialExecutor:
         self,
         registry: dict[str, OperationSpec],
         max_batch_size: int = 5,
+        governance_engine: GovernanceEngine | None = None,
+        governance_context_builder: GovernanceContextBuilder | None = None,
     ):
         self.registry = registry
         self.max_batch_size = max_batch_size
+        self.governance_engine = governance_engine
+        self.governance_context_builder = governance_context_builder
+        self.registry = registry
+        self.max_batch_size = max_batch_size
+
+    async def _check_governance(
+        self,
+        task: Task,
+        arguments: dict[str, Any],
+        user_id: int | None,
+    ) -> dict[str, Any] | None:
+        """Return a failure result if governance blocks execution."""
+
+        if (
+            self.governance_engine is None
+            or self.governance_context_builder is None
+        ):
+            if task.operation == "place_order":
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "GOVERNANCE_UNAVAILABLE",
+                        "message": "Checkout governance is not configured.",
+                    },
+                }
+
+            return None
+
+        context = PolicyContext(
+            task_id=task.id,
+            operation=task.operation,
+            user_id=user_id,
+            arguments=arguments,
+        )
+
+        context = await self.governance_context_builder.build(context)
+        decision = self.governance_engine.evaluate(context)
+
+        logger.info(
+            "governance.evaluation_completed task_id=%s operation=%s "
+            "decision=%s reason_codes=%s matched_policy_ids=%s",
+            task.id,
+            task.operation,
+            decision.decision,
+            decision.reason_codes,
+            decision.matched_policy_ids,
+        )
+
+        if decision.decision == GovernanceDecision.ALLOW:
+            return None
+
+        if decision.decision == GovernanceDecision.REQUIRE_APPROVAL:
+            code = "APPROVAL_REQUIRED"
+            message = "This operation requires approval before execution."
+        else:
+            code = (
+                decision.reason_codes[0]
+                if decision.reason_codes
+                else "GOVERNANCE_DENIED"
+            )
+            message = "Governance policy blocked this operation."
+
+        return {
+            "ok": False,
+            "error": {
+                "code": code,
+                "message": message,
+            },
+            "governance": decision.model_dump(mode="json"),
+        }
+
 
     def _resolve_arguments(
         self,
@@ -181,6 +260,7 @@ class SequentialExecutor:
         self,
         task: Task,
         completed_results: dict[str, Any],
+        user_id: int | None,
     ) -> tuple[str, Any, bool]:
         """
         Execute one task independently.
@@ -231,6 +311,20 @@ class SequentialExecutor:
                 pformat(validated_arguments, sort_dicts=False),
             )
 
+            governance_failure = await self._check_governance(
+                task=task,
+                arguments=validated_arguments,
+                user_id=user_id,
+            )
+
+            if governance_failure is not None:
+                logger.warning(
+                    "planner.task_blocked_by_governance task_id=%s operation=%s",
+                    task.id,
+                    task.operation,
+                )
+                return task.id, governance_failure, True
+
             result = await spec.execute.ainvoke(validated_arguments)
             failed = self._result_indicates_failure(result)
 
@@ -270,6 +364,7 @@ class SequentialExecutor:
         completed_results: dict[str, Any],
         scheduler: DependencyAwareScheduler,
         batch_number: int,
+        user_id: int | None,
     ) -> None:
         """Execute every task in a selected batch concurrently."""
 
@@ -288,6 +383,7 @@ class SequentialExecutor:
                 self._execute_one(
                     task=task,
                     completed_results=completed_results,
+                    user_id=user_id,
                 )
                 for task in batch
             ]
@@ -325,7 +421,7 @@ class SequentialExecutor:
             scheduler.statuses,
         )
 
-    async def execute(self, plan: Plan) -> dict[str, Any]:
+    async def execute(self, plan: Plan, user_id: int | None = None) -> dict[str, Any]:
         """Schedule safe batches and execute each batch concurrently."""
 
         logger.info(
@@ -383,6 +479,7 @@ class SequentialExecutor:
                 completed_results=results,
                 scheduler=scheduler,
                 batch_number=batch_number,
+                user_id=user_id
             )
 
         # Preserve skipped-task information in the returned results.

@@ -13,6 +13,8 @@ from app.tools.dependencies import (
 from app.planner.operations import OperationSpec
 from app.planner.planner import Planner
 from app.planner.executor import SequentialExecutor
+from app.governance.setup import build_governance_engine
+from app.governance.context_builder import GovernanceContextBuilder
 
 from app.agent.operation_descriptions import (
     OPERATION_ACCESS,
@@ -64,7 +66,7 @@ registry = {
 }
 
 
-# 4. Initialize the model, planner, and executor.
+# 4. Initialize the model and planner.
 model = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0,
@@ -75,4 +77,19 @@ planner = Planner(
     registry=registry,
 )
 
-executor = SequentialExecutor(registry)
+
+# 5. Initialize governance.
+governance_engine = build_governance_engine()
+
+governance_context_builder = GovernanceContextBuilder(
+    order_service_context=order_service_context,
+)
+
+
+# 6. Initialize the executor with governance.
+executor = SequentialExecutor(
+    registry=registry,
+    governance_engine=governance_engine,
+    governance_context_builder=governance_context_builder,
+)
+

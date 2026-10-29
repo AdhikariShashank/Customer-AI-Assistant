@@ -13,6 +13,24 @@ class OrderService:
     def __init__(self, repository: OrderRepository):
         self.repository = repository
 
+
+    
+    async def get_checkout_facts(
+        self,
+        user_id: int,
+    ) -> dict | None:
+        """Return trusted facts used by pre-checkout governance."""
+
+        logger.info(
+            "Building checkout facts: user_id=%s",
+            user_id,
+        )
+
+        return await self.repository.get_checkout_facts(
+            user_id=user_id,
+        )
+
+
     async def list_orders(
     self,
     user_id: int,

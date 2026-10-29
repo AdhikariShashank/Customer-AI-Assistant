@@ -1,4 +1,6 @@
 
+from decimal import Decimal
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,6 +16,69 @@ from app.models.product import Product
 class OrderRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+
+    
+    async def get_checkout_facts(
+        self,
+        user_id: int,
+    ) -> dict | None:
+        """Calculate a pre-checkout total from current product prices."""
+
+        result = await self.db.execute(
+            select(Cart).where(
+                Cart.user_id == user_id,
+                Cart.status == "ACTIVE",
+            )
+        )
+        cart = result.scalar_one_or_none()
+
+        # No active cart means we cannot establish checkout facts.
+        if cart is None:
+            return None
+
+        result = await self.db.execute(
+            select(CartItem).where(CartItem.cart_id == cart.id)
+        )
+        cart_items = list(result.scalars().all())
+
+        # Let the existing checkout method report CART_EMPTY.
+        if not cart_items:
+            return {
+                "order_total": Decimal("0.00"),
+                "currency": "INR",
+            }
+
+        product_ids = sorted({
+            item.product_id for item in cart_items
+        })
+
+        result = await self.db.execute(
+            select(Product).where(Product.id.in_(product_ids))
+        )
+        products = {
+            product.id: product
+            for product in result.scalars().all()
+        }
+
+        # Never calculate an understated total if a product is missing.
+        if any(item.product_id not in products for item in cart_items):
+            return None
+
+        total = sum(
+            (
+                Decimal(str(products[item.product_id].price))
+                * item.quantity
+                for item in cart_items
+            ),
+            start=Decimal("0.00"),
+        )
+
+        return {
+            "order_total": total,
+            "currency": "INR",
+        }
+
 
     async def list_by_user(
         self,

@@ -10,6 +10,7 @@ from app.agent.dependencies import (
 )
 from app.agent.state import PlannerAgentState
 from app.planner.validator import validate_plan
+from langchain_core.runnables import RunnableConfig
 
 
 logger = logging.getLogger(__name__)
@@ -53,9 +54,36 @@ async def planning_node(state: PlannerAgentState):
     return {"plan": validated_plan}
 
 
-async def execution_node(state: PlannerAgentState):
-    results = await executor.execute(state["plan"])
+
+async def execution_node(
+    state: PlannerAgentState,
+    config: RunnableConfig,
+):
+    configurable = config.get("configurable", {})
+    user_id = configurable.get("user_id")
+
+    # Fail closed if authenticated identity is missing or invalid.
+    if (
+        isinstance(user_id, bool)
+        or not isinstance(user_id, int)
+        or user_id < 1
+    ):
+        raise ValueError(
+            "A valid authenticated user_id is required for execution."
+        )
+
+    logger.info(
+        "planner.execution_node_started user_id=%s",
+        user_id,
+    )
+
+    results = await executor.execute(
+        state["plan"],
+        user_id=user_id,
+    )
+
     return {"results": results}
+
 
 
 async def response_node(state: PlannerAgentState):
