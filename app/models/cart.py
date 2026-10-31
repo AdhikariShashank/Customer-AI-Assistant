@@ -56,3 +56,8 @@ class Cart(Base):
         back_populates="cart",
         cascade="all, delete-orphan",
     )
+
+    approval_requests = relationship(
+        "ApprovalRequest",
+        back_populates="cart",
+    )

@@ -1,10 +1,10 @@
 
 import asyncio
+from contextlib import AbstractAsyncContextManager
 import json
 import logging
 from pprint import pformat
-from typing import Any
-
+from typing import AsyncContextManager, Callable, Any
 from app.planner.exceptions import TaskExecutionError
 from app.planner.operations import OperationSpec
 from app.planner.scheduler import DependencyAwareScheduler
@@ -16,8 +16,15 @@ from app.governance.schemas import (
     PolicyContext,
 )
 
+from app.services.approval import ApprovalService
+
 
 logger = logging.getLogger(__name__)
+
+ApprovalServiceContextFactory = Callable[
+    [],
+    AbstractAsyncContextManager[ApprovalService],
+]
 
 
 def get_output_path(value: Any, path: str) -> Any:
@@ -129,25 +136,25 @@ class SequentialExecutor:
 
     def __init__(
         self,
-        registry: dict[str, OperationSpec],
+        registry,
         max_batch_size: int = 5,
-        governance_engine: GovernanceEngine | None = None,
-        governance_context_builder: GovernanceContextBuilder | None = None,
+        governance_engine=None,
+        governance_context_builder=None,
+        approval_service_context: ApprovalServiceContextFactory | None = None,
     ):
         self.registry = registry
         self.max_batch_size = max_batch_size
+
         self.governance_engine = governance_engine
         self.governance_context_builder = governance_context_builder
-        self.registry = registry
-        self.max_batch_size = max_batch_size
+        self.approval_service_context = approval_service_context
 
     async def _check_governance(
         self,
         task: Task,
         arguments: dict[str, Any],
         user_id: int | None,
-    ) -> dict[str, Any] | None:
-        """Return a failure result if governance blocks execution."""
+    ) -> dict | None:
 
         if (
             self.governance_engine is None
@@ -158,7 +165,7 @@ class SequentialExecutor:
                     "ok": False,
                     "error": {
                         "code": "GOVERNANCE_UNAVAILABLE",
-                        "message": "Checkout governance is not configured.",
+                        "message": "Governance is not configured.",
                     },
                 }
 
@@ -171,42 +178,199 @@ class SequentialExecutor:
             arguments=arguments,
         )
 
+        # Gather trusted facts from backend services.
         context = await self.governance_context_builder.build(context)
+
         decision = self.governance_engine.evaluate(context)
 
         logger.info(
-            "governance.evaluation_completed task_id=%s operation=%s "
-            "decision=%s reason_codes=%s matched_policy_ids=%s",
+            "planner.governance_evaluated "
+            "task_id=%s operation=%s decision=%s "
+            "reason_codes=%s matched_policy_ids=%s",
             task.id,
             task.operation,
-            decision.decision,
+            decision.decision.value,
             decision.reason_codes,
             decision.matched_policy_ids,
         )
 
+        governance_data = decision.model_dump(mode="json")
+
+        # --------------------------------------------------
+        # ALLOW
+        # --------------------------------------------------
+
         if decision.decision == GovernanceDecision.ALLOW:
             return None
 
-        if decision.decision == GovernanceDecision.REQUIRE_APPROVAL:
-            code = "APPROVAL_REQUIRED"
-            message = "This operation requires approval before execution."
-        else:
-            code = (
+        # --------------------------------------------------
+        # DENY
+        # --------------------------------------------------
+
+        if decision.decision == GovernanceDecision.DENY:
+            reason_code = (
                 decision.reason_codes[0]
                 if decision.reason_codes
                 else "GOVERNANCE_DENIED"
             )
-            message = "Governance policy blocked this operation."
+
+            return {
+                "ok": False,
+                "error": {
+                    "code": reason_code,
+                    "message": "This operation is not permitted.",
+                },
+                "governance": governance_data,
+            }
+
+        # --------------------------------------------------
+        # REQUIRE_APPROVAL
+        # --------------------------------------------------
+
+        if decision.decision == GovernanceDecision.REQUIRE_APPROVAL:
+
+            if self.approval_service_context is None:
+                logger.error(
+                    "planner.approval_service_unavailable "
+                    "task_id=%s operation=%s",
+                    task.id,
+                    task.operation,
+                )
+
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "APPROVAL_SERVICE_UNAVAILABLE",
+                        "message": "Approval service is not configured.",
+                    },
+                    "governance": governance_data,
+                }
+
+            if user_id is None:
+                logger.error(
+                    "planner.approval_missing_user_id task_id=%s",
+                    task.id,
+                )
+
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "APPROVAL_USER_UNAVAILABLE",
+                        "message": "Cannot create approval without an authenticated user.",
+                    },
+                    "governance": governance_data,
+                }
+
+            # Find the exact policy that requested approval.
+            approval_policy = next(
+                (
+                    result
+                    for result in decision.policy_results
+                    if result.decision == GovernanceDecision.REQUIRE_APPROVAL
+                ),
+                None,
+            )
+
+            if approval_policy is None:
+                logger.error(
+                    "planner.approval_policy_result_missing "
+                    "task_id=%s",
+                    task.id,
+                )
+
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "APPROVAL_POLICY_RESULT_MISSING",
+                        "message": "Unable to identify the policy requiring approval.",
+                    },
+                    "governance": governance_data,
+                }
+
+            # These facts must come from the trusted context builder,
+            # never from planner arguments.
+            required_fact_keys = (
+                "cart_id",
+                "order_total",
+                "currency",
+                "cart_snapshot",
+            )
+
+            missing_facts = [
+                key
+                for key in required_fact_keys
+                if key not in context.attributes
+                or context.attributes[key] is None
+            ]
+
+            if missing_facts:
+                logger.error(
+                    "planner.approval_checkout_facts_incomplete "
+                    "task_id=%s missing_facts=%s",
+                    task.id,
+                    missing_facts,
+                )
+
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "APPROVAL_FACTS_UNAVAILABLE",
+                        "message": "Trusted checkout information is incomplete.",
+                    },
+                    "governance": governance_data,
+                }
+
+            checkout_facts = {
+                key: context.attributes[key]
+                for key in required_fact_keys
+            }
+
+            logger.info(
+                "planner.approval_request_creation_started "
+                "task_id=%s user_id=%s policy_id=%s reason_code=%s",
+                task.id,
+                user_id,
+                approval_policy.policy_id,
+                approval_policy.reason_code,
+            )
+
+            async with self.approval_service_context() as approval_service:
+                approval = await approval_service.create_request(
+                    user_id=user_id,
+                    checkout_facts=checkout_facts,
+                    policy_id=approval_policy.policy_id,
+                    reason_code=approval_policy.reason_code,
+                )
+
+            logger.info(
+                "planner.approval_request_created "
+                "task_id=%s approval_id=%s status=%s",
+                task.id,
+                approval.id,
+                approval.status,
+            )
+
+            return {
+                "ok": False,
+                "approval_required": True,
+                "approval_id": approval.id,
+                "approval_status": approval.status,
+                "execution_status": "WAITING_FOR_APPROVAL",
+                "message": (
+                    approval_policy.message
+                    or "This operation requires approval before execution."
+                ),
+                "governance": governance_data,
+            }
 
         return {
             "ok": False,
             "error": {
-                "code": code,
-                "message": message,
+                "code": "UNKNOWN_GOVERNANCE_DECISION",
+                "message": "Governance returned an unsupported decision.",
             },
-            "governance": decision.model_dump(mode="json"),
+            "governance": governance_data,
         }
-
 
     def _resolve_arguments(
         self,
@@ -319,10 +483,11 @@ class SequentialExecutor:
 
             if governance_failure is not None:
                 logger.warning(
-                    "planner.task_blocked_by_governance task_id=%s operation=%s",
+                    "planner.task_blocked_by_governance task_id=%s result=%s",
                     task.id,
-                    task.operation,
+                    pformat(governance_failure),
                 )
+
                 return task.id, governance_failure, True
 
             result = await spec.execute.ainvoke(validated_arguments)
@@ -394,7 +559,21 @@ class SequentialExecutor:
         for task_id, result, failed in outcomes:
             completed_results[task_id] = result
 
-            if failed:
+            # Approval is a paused execution state, not a failure.
+            if (
+                isinstance(result, dict)
+                and result.get("execution_status") == "WAITING_FOR_APPROVAL"
+            ):
+                scheduler.mark_waiting_for_approval(task_id)
+
+                logger.info(
+                    "planner.executor_task_waiting_for_approval "
+                    "task_id=%s approval_id=%s",
+                    task_id,
+                    result.get("approval_id"),
+                )
+
+            elif failed:
                 scheduler.mark_failed(task_id)
 
                 logger.warning(
@@ -403,6 +582,7 @@ class SequentialExecutor:
                     task_id,
                     scheduler.tasks[task_id].operation,
                 )
+
             else:
                 scheduler.mark_succeeded(task_id)
 

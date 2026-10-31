@@ -5,6 +5,7 @@ from app.tools.cart import create_cart_tools
 from app.tools.order import create_order_tools
 from app.tools.product import create_product_tools
 from app.tools.dependencies import (
+    approval_service_context,
     cart_service_context,
     order_service_context,
     product_service_context,
@@ -91,5 +92,6 @@ executor = SequentialExecutor(
     registry=registry,
     governance_engine=governance_engine,
     governance_context_builder=governance_context_builder,
+    approval_service_context=approval_service_context,
 )
 

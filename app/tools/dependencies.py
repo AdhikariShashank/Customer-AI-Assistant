@@ -7,6 +7,24 @@ from app.repositories.cart import CartRepository
 from app.services.order import OrderService
 from app.services.product import ProductService
 from app.services.cart import CartService
+from app.repositories.approval import ApprovalRepository
+from app.services.approval import ApprovalService
+
+
+@asynccontextmanager
+async def approval_service_context():
+    async with AsyncLocalSession() as db:
+        try:
+            repository = ApprovalRepository(db)
+            service = ApprovalService(repository)
+
+            yield service
+
+            await db.commit()
+
+        except Exception:
+            await db.rollback()
+            raise
 
 
 @asynccontextmanager

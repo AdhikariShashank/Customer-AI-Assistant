@@ -14,6 +14,7 @@ TaskStatus = Literal[
     "succeeded",
     "failed",
     "skipped",
+    "waiting_for_approval",
 ]
 
 
@@ -74,6 +75,23 @@ class DependencyAwareScheduler:
         self._initialize(plan)
 
         self._log_state("initialization_complete")
+
+
+    def mark_waiting_for_approval(self, task_id: str) -> None:
+        previous_status = self.statuses[task_id]
+        self.statuses[task_id] = "waiting_for_approval"
+
+        logger.info(
+            "planner.scheduler_task_status_updated "
+            "task_id=%s previous_status=%s new_status=%s",
+            task_id,
+            previous_status,
+            self.statuses[task_id],
+        )
+
+        self._log_state(
+            f"after_task_waiting_for_approval:{task_id}"
+        )
 
     def _log_state(self, event: str) -> None:
         """Log the scheduler's current internal state."""
@@ -367,6 +385,21 @@ class DependencyAwareScheduler:
         ready = self._get_ready_tasks()
 
         if not ready:
+            waiting_tasks = [
+                task_id
+                for task_id, status in self.statuses.items()
+                if status == "waiting_for_approval"
+            ]
+
+            if waiting_tasks:
+                logger.info(
+                    "planner.scheduler_paused_for_approval "
+                    "waiting_tasks=%s pending_tasks=%s",
+                    waiting_tasks,
+                    pending,
+                )
+                return []
+
             logger.error(
                 "planner.scheduler_no_ready_tasks "
                 "pending_tasks=%s statuses=%s prerequisites=%s",

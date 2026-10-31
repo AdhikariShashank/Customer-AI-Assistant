@@ -33,3 +33,15 @@ class User(Base):
     default="user",
     server_default="user",
     )
+
+    requested_approvals = relationship(
+        "ApprovalRequest",
+        foreign_keys="ApprovalRequest.user_id",
+        back_populates="user",
+    )
+
+    reviewed_approvals = relationship(
+        "ApprovalRequest",
+        foreign_keys="ApprovalRequest.reviewed_by",
+        back_populates="reviewer",
+    )

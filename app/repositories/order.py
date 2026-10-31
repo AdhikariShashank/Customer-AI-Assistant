@@ -23,7 +23,7 @@ class OrderRepository:
         self,
         user_id: int,
     ) -> dict | None:
-        """Calculate a pre-checkout total from current product prices."""
+        """Build trusted checkout facts and a cart snapshot."""
 
         result = await self.db.execute(
             select(Cart).where(
@@ -33,20 +33,27 @@ class OrderRepository:
         )
         cart = result.scalar_one_or_none()
 
-        # No active cart means we cannot establish checkout facts.
         if cart is None:
             return None
 
         result = await self.db.execute(
-            select(CartItem).where(CartItem.cart_id == cart.id)
+            select(CartItem)
+            .where(CartItem.cart_id == cart.id)
+            .order_by(CartItem.id)
         )
         cart_items = list(result.scalars().all())
 
-        # Let the existing checkout method report CART_EMPTY.
         if not cart_items:
             return {
+                "cart_id": cart.id,
                 "order_total": Decimal("0.00"),
                 "currency": "INR",
+                "cart_snapshot": {
+                    "cart_id": cart.id,
+                    "items": [],
+                    "total_amount": "0.00",
+                    "currency": "INR",
+                },
             }
 
         product_ids = sorted({
@@ -56,27 +63,48 @@ class OrderRepository:
         result = await self.db.execute(
             select(Product).where(Product.id.in_(product_ids))
         )
+
         products = {
             product.id: product
             for product in result.scalars().all()
         }
 
-        # Never calculate an understated total if a product is missing.
-        if any(item.product_id not in products for item in cart_items):
+        if any(
+            item.product_id not in products
+            or not products[item.product_id].is_active
+            for item in cart_items
+        ):
             return None
 
-        total = sum(
-            (
-                Decimal(str(products[item.product_id].price))
-                * item.quantity
-                for item in cart_items
-            ),
-            start=Decimal("0.00"),
-        )
+        total = Decimal("0.00")
+        snapshot_items = []
+
+        for item in cart_items:
+            product = products[item.product_id]
+
+            unit_price = Decimal(str(product.price))
+            subtotal = unit_price * item.quantity
+
+            total += subtotal
+
+            snapshot_items.append({
+                "product_id": product.id,
+                "product_name": product.name,
+                "quantity": item.quantity,
+                "unit_price": str(unit_price),
+                "subtotal": str(subtotal),
+            })
 
         return {
+            "cart_id": cart.id,
             "order_total": total,
             "currency": "INR",
+            "cart_snapshot": {
+                "cart_id": cart.id,
+                "items": snapshot_items,
+                "total_amount": str(total),
+                "currency": "INR",
+            },
         }
 
 
