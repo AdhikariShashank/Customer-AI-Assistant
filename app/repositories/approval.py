@@ -12,6 +12,59 @@ class ApprovalRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def get_pending_by_cart_for_update(
+        self,
+        cart_id: int,
+    ) -> ApprovalRequest | None:
+        """Fetch and lock the pending approval for a cart."""
+
+        stmt = (
+            select(ApprovalRequest)
+            .where(
+                ApprovalRequest.cart_id == cart_id,
+                ApprovalRequest.status == ApprovalStatus.PENDING.value,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+        result = await self.db.execute(stmt)
+
+        return result.scalar_one_or_none()
+
+
+    async def mark_expired(
+        self,
+        approval: ApprovalRequest,
+    ) -> ApprovalRequest:
+        """Transition a pending approval request to EXPIRED."""
+
+        approval.status = ApprovalStatus.EXPIRED.value
+
+        await self.db.flush()
+        await self.db.refresh(approval)
+
+        return approval
+
+    async def get_pending_for_update(
+        self,
+        approval_id: int,
+    ) -> ApprovalRequest | None:
+        """Retrieve a pending approval request with a row lock."""
+
+        stmt = (
+            select(ApprovalRequest)
+            .where(
+                ApprovalRequest.id == approval_id,
+                ApprovalRequest.status == ApprovalStatus.PENDING.value,
+            )
+            .with_for_update()
+        )
+
+        result = await self.db.execute(stmt)
+
+        return result.scalar_one_or_none()
+
     async def create(
         self,
         approval_request: ApprovalRequest,
@@ -54,24 +107,20 @@ class ApprovalRepository:
 
         return result.scalar_one_or_none()
 
-    async def get_pending_for_update(
+    async def get_by_id_for_update(
         self,
         approval_id: int,
     ) -> ApprovalRequest | None:
-        """Retrieve and lock a pending approval request."""
-
         stmt = (
             select(ApprovalRequest)
-            .where(
-                ApprovalRequest.id == approval_id,
-                ApprovalRequest.status == ApprovalStatus.PENDING.value,
-            )
+            .where(ApprovalRequest.id == approval_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
 
         result = await self.db.execute(stmt)
-
         return result.scalar_one_or_none()
+    
 
     async def get_user_approvals(
         self,
@@ -95,21 +144,19 @@ class ApprovalRepository:
 
     async def update_review(
         self,
-        approval_request: ApprovalRequest,
-        *,
+        approval: ApprovalRequest,
         status: ApprovalStatus,
         reviewed_by: int,
         reviewed_at: datetime,
-        review_comment: str | None = None,
+        review_comment: str | None,
     ) -> ApprovalRequest:
-        """Update the review decision and reviewer details."""
 
-        approval_request.status = status.value
-        approval_request.reviewed_by = reviewed_by
-        approval_request.reviewed_at = reviewed_at
-        approval_request.review_comment = review_comment
+        approval.status = status.value
+        approval.reviewed_by = reviewed_by
+        approval.reviewed_at = reviewed_at
+        approval.review_comment = review_comment
 
         await self.db.flush()
-        await self.db.refresh(approval_request)
+        await self.db.refresh(approval)
 
-        return approval_request
+        return approval
