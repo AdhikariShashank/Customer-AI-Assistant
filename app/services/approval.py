@@ -26,6 +26,25 @@ class ApprovalService:
         self.repository = repository
         self.approval_ttl = approval_ttl
 
+
+    async def get_pending_approvals(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[ApprovalRequest]:
+        """Get pending approval requests for administrators."""
+
+        if limit < 1 or limit > 100 or offset < 0:
+            raise AppException(
+                code="INVALID_PAGINATION",
+                message="Invalid approval pagination parameters.",
+            )
+
+        return await self.repository.get_pending_approvals(
+            limit=limit,
+            offset=offset,
+        )
+
     # --------------------------------------------------
     # 1. VALIDATE CHECKOUT FACTS
     # --------------------------------------------------
@@ -332,14 +351,17 @@ class ApprovalService:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
 
         if expires_at <= now:
-            expired_approval = await self.repository.mark_expired(approval)
+            await self.repository.mark_expired(approval)
 
             logger.info(
                 "Approval request expired during review: approval_id=%s",
                 approval_id,
             )
 
-            return expired_approval
+            raise AppException(
+                code="APPROVAL_EXPIRED",
+                message="This approval request has expired and cannot be reviewed.",
+            )
 
         updated_approval = await self.repository.update_review(
             approval=approval,

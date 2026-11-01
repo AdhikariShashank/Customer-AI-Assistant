@@ -407,19 +407,21 @@ async def test_approve_expired_request_marks_it_expired(
     )
 
     mock_repository.get_by_id_for_update.return_value = expired_request
+
     async def mark_expired_side_effect(approval):
         approval.status = ApprovalStatus.EXPIRED.value
         return approval
 
     mock_repository.mark_expired.side_effect = mark_expired_side_effect
 
-    result = await approval_service.approve(
-        approval_id=100,
-        reviewer_id=2,
-        comment="Approved too late",
-    )
+    with pytest.raises(AppException) as exc_info:
+        await approval_service.approve(
+            approval_id=100,
+            reviewer_id=2,
+            comment="Approved too late",
+        )
 
-    assert result.status == ApprovalStatus.EXPIRED.value
+    assert exc_info.value.code == "APPROVAL_EXPIRED"
 
     mock_repository.get_by_id_for_update.assert_awaited_once_with(
         approval_id=100,

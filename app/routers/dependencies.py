@@ -9,6 +9,8 @@ from app.repositories.order import OrderRepository
 from app.services.product import ProductService
 from app.services.cart import CartService
 from app.services.order import OrderService
+from app.repositories.approval import ApprovalRepository
+from app.services.approval import ApprovalService
 
 
 def get_product_service(
@@ -33,4 +35,11 @@ def get_order_service(
 ) -> OrderService:
     return OrderService(
         repository=OrderRepository(db)
+    )
+
+def get_approval_service(
+    db: AsyncSession = Depends(get_db),
+) -> ApprovalService:
+    return ApprovalService(
+        repository=ApprovalRepository(db)
     )

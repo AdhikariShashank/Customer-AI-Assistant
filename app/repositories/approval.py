@@ -12,6 +12,27 @@ class ApprovalRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def get_pending_approvals(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[ApprovalRequest]:
+        """Retrieve pending approval requests for the admin queue."""
+
+        stmt = (
+            select(ApprovalRequest)
+            .where(
+                ApprovalRequest.status == ApprovalStatus.PENDING.value
+            )
+            .order_by(ApprovalRequest.requested_at.asc())
+            .limit(limit)
+            .offset(offset)
+        )
+
+        result = await self.db.execute(stmt)
+
+        return list(result.scalars().all())
+
     async def get_pending_by_cart_for_update(
         self,
         cart_id: int,
