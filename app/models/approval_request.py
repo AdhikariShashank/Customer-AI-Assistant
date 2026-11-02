@@ -12,6 +12,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -46,6 +47,11 @@ class ApprovalRequest(Base):
         Index(
             "ix_approval_requests_requested_at",
             "requested_at",
+        ),
+        UniqueConstraint(
+            "execution_id",
+            "waiting_task_id",
+            name="uq_approval_execution_task",
         ),
     )
 
@@ -166,3 +172,15 @@ class ApprovalRequest(Base):
     )
 
     order = relationship("Order")
+
+    execution_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_executions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    waiting_task_id: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    execution = relationship("AgentExecution")

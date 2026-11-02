@@ -15,6 +15,8 @@ TaskStatus = Literal[
     "failed",
     "skipped",
     "waiting_for_approval",
+    "rejected",
+    "expired",
 ]
 
 ALLOWED_STATUSES = {
@@ -24,6 +26,8 @@ ALLOWED_STATUSES = {
     "failed",
     "skipped",
     "waiting_for_approval",
+    "rejected",
+    "expired",
 }
 
 
@@ -67,6 +71,59 @@ class DependencyAwareScheduler:
             self.restore_statuses(statuses)
 
         self._log_state("initialization_complete")
+
+    
+    def resolve_approval(
+        self,
+        task_id: str,
+        outcome: Literal["rejected", "expired"],
+    ) -> list[str]:
+        """Resolve an approval task and skip newly blocked tasks."""
+
+        self._validate_task_id(task_id)
+
+        current_status = self.statuses[task_id]
+
+        if current_status != "waiting_for_approval":
+            raise TaskExecutionError(
+                f"Task {task_id} is not waiting for approval. "
+                f"Current status: {current_status}"
+            )
+
+        if outcome not in ("rejected", "expired"):
+            raise ValueError(f"Unsupported approval outcome: {outcome}")
+
+        previous_statuses = self.statuses.copy()
+
+        self.statuses[task_id] = outcome
+
+        logger.info(
+            "planner.approval_task_resolution_started "
+            "task_id=%s previous_status=%s outcome=%s",
+            task_id,
+            current_status,
+            outcome,
+        )
+
+        self._skip_blocked_tasks()
+
+        newly_skipped = [
+            dependent_id
+            for dependent_id, status in self.statuses.items()
+            if status == "skipped"
+            and previous_statuses[dependent_id] != "skipped"
+        ]
+
+        logger.info(
+            "planner.approval_task_resolution_finished "
+            "task_id=%s outcome=%s newly_skipped_task_ids=%s",
+            task_id,
+            outcome,
+            newly_skipped,
+        )
+
+        return newly_skipped
+
 
     def restore_statuses(
         self,
@@ -348,7 +405,12 @@ class DependencyAwareScheduler:
                 failed_dependencies = [
                     dependency
                     for dependency in dependencies
-                    if self.statuses[dependency] in ("failed", "skipped")
+                    if self.statuses[dependency] in (
+                        "failed",
+                        "skipped",
+                        "rejected",
+                        "expired",
+                    )
                 ]
 
                 if failed_dependencies:

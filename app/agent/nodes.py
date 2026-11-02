@@ -1,3 +1,4 @@
+
 import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -12,6 +13,63 @@ from app.agent.state import PlannerAgentState
 from app.planner.validator import validate_plan
 
 logger = logging.getLogger(__name__)
+
+
+# Operations that can establish approval status.
+APPROVAL_OPERATIONS = {
+    "get_pending_approval",
+    "get_pending_approvals",
+    "get_user_approvals",
+}
+
+
+def was_approval_checked(results: dict) -> bool:
+    """
+    Return True only when an approval-related operation
+    successfully returned approval information.
+    """
+
+    for operation_name in APPROVAL_OPERATIONS:
+        operation_result = results.get(operation_name)
+
+        if not isinstance(operation_result, dict):
+            continue
+
+        if operation_result.get("ok") is not True:
+            continue
+
+        if "has_pending_approval" in operation_result:
+            return True
+
+        if "approvals" in operation_result:
+            return True
+
+        if "approval" in operation_result:
+            return True
+
+    return False
+
+
+def get_approval_verification_message(results: dict) -> str:
+    """
+    Produce a deterministic approval verification instruction.
+    """
+
+    if was_approval_checked(results):
+        return (
+            "Approval status was successfully checked. "
+            "Use the returned approval information as the "
+            "authoritative source."
+        )
+
+    return (
+        "Approval status was NOT verified. No successful "
+        "approval lookup operation returned approval information. "
+        "You MUST NOT claim that a pending approval exists or "
+        "that no pending approval exists. Explicitly tell the user "
+        "that approval status could not be verified because "
+        "no approval lookup operation was executed successfully."
+    )
 
 
 async def planning_node(state: PlannerAgentState):
@@ -109,10 +167,27 @@ async def response_node(state: PlannerAgentState):
     execution_status = state.get("execution_status", "COMPLETED")
     execution_results = state.get("results", {})
 
+    if not isinstance(execution_results, dict):
+        execution_results = {}
+
+    approval_status_verified = was_approval_checked(
+        execution_results
+    )
+
+    approval_verification_message = (
+        get_approval_verification_message(execution_results)
+    )
+
     logger.info(
         "final_response.started execution_id=%s status=%s",
         execution_id,
         execution_status,
+    )
+
+    logger.info(
+        "final_response.approval_verification "
+        "verified=%s",
+        approval_status_verified,
     )
 
     logger.info(
@@ -133,6 +208,30 @@ async def response_node(state: PlannerAgentState):
                 "because add_item has already changed that cart. "
 
                 "Use list_orders as the source for order information. "
+
+                "Approval information rules: "
+                "The Approval status verified field is authoritative. "
+                "If it is false, you MUST NOT claim that an approval "
+                "exists or that no approval exists. Instead, explicitly "
+                "state that approval status could not be verified. "
+                "If it is true, use only the approval information "
+                "returned by the approval operation. "
+                "Cart information alone cannot establish whether "
+                "an approval exists. "
+                "Never infer that no pending approval exists from "
+                "an empty or missing approval result. "
+                "If has_pending_approval is true, report the approval "
+                "details returned by the operation. "
+                "If has_pending_approval is false, report that there "
+                "is no pending approval. "
+                "Do not confuse an approval belonging to an earlier "
+                "execution with a new execution. "
+
+                "Currency formatting rules: "
+                "Use the currency returned by the execution results "
+                "when displaying monetary amounts. "
+                "For INR, use the ₹ symbol, never $. "
+                "Do not assume a currency if it is not provided. "
 
                 "If any operation failed, explain that failure. "
 
@@ -163,6 +262,10 @@ async def response_node(state: PlannerAgentState):
                 f"User request:\n{user_request}\n\n"
                 f"Execution ID:\n{execution_id}\n\n"
                 f"Execution status:\n{execution_status}\n\n"
+                f"Approval status verified:\n"
+                f"{approval_status_verified}\n\n"
+                f"Approval verification instruction:\n"
+                f"{approval_verification_message}\n\n"
                 f"Execution results:\n{execution_results}"
             )
         ),

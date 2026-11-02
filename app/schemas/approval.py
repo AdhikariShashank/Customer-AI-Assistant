@@ -5,6 +5,14 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class ExpirationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    processed_count: int
+    expired_count: int
+    failed_count: int
+    skipped_count: int = 0
+
 class ApprovalResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

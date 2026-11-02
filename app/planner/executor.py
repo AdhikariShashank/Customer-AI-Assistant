@@ -1,3 +1,4 @@
+
 import asyncio
 import json
 import logging
@@ -32,109 +33,8 @@ AgentExecutionServiceContextFactory = Callable[
 ]
 
 
-def get_output_path(value: Any, path: str) -> Any:
-    """Read a dot-separated path from a dict, list, or model."""
-
-    current = value
-
-    for part in path.split("."):
-        if isinstance(current, dict):
-            if part not in current:
-                raise KeyError(
-                    f"Output field {part!r} not found in reference path"
-                )
-
-            current = current[part]
-
-        elif isinstance(current, (list, tuple)):
-            if not part.isdigit():
-                raise KeyError(
-                    f"Expected a list index, got {part!r}"
-                )
-
-            current = current[int(part)]
-
-        else:
-            if hasattr(current, "model_dump"):
-                current = current.model_dump()
-
-                if part not in current:
-                    raise KeyError(
-                        f"Output field {part!r} not found"
-                    )
-
-                current = current[part]
-
-            elif hasattr(current, part):
-                current = getattr(current, part)
-
-            else:
-                raise KeyError(
-                    f"Cannot resolve {part!r} in output path {path!r}"
-                )
-
-    return current
-
-
-def resolve_input_reference(
-    reference: OutputReference,
-    completed_results: dict[str, Any],
-) -> Any:
-    """Resolve an output path and optional list-item selection."""
-
-    if reference.task_id not in completed_results:
-        raise TaskExecutionError(
-            f"Referenced task {reference.task_id} has no result."
-        )
-
-    try:
-        value = get_output_path(
-            completed_results[reference.task_id],
-            reference.path,
-        )
-
-        if reference.select_by is not None:
-            if not isinstance(value, (list, tuple)):
-                raise TypeError(
-                    f"Reference path {reference.path!r} is not a list."
-                )
-
-            field = reference.select_by["field"]
-            expected_value = reference.select_by["value"]
-
-            matches = [
-                item
-                for item in value
-                if isinstance(item, dict)
-                and item.get(field) == expected_value
-            ]
-
-            if len(matches) != 1:
-                raise ValueError(
-                    f"Expected one item matching "
-                    f"{field}={expected_value!r}, "
-                    f"found {len(matches)}."
-                )
-
-            value = matches[0]
-
-        if reference.select_field is not None:
-            value = get_output_path(
-                value,
-                reference.select_field,
-            )
-
-        return value
-
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
-        raise TaskExecutionError(
-            f"Could not resolve reference from "
-            f"{reference.task_id}.{reference.path}: {exc}"
-        ) from exc
-
-
 class SequentialExecutor:
-    """Execute dependency-aware batches with governance and persistence."""
+    """Execute dependency-aware task batches with governance and persistence."""
 
     def __init__(
         self,
@@ -147,6 +47,9 @@ class SequentialExecutor:
             AgentExecutionServiceContextFactory | None
         ) = None,
     ) -> None:
+        if max_batch_size < 1:
+            raise ValueError("max_batch_size must be at least 1.")
+
         self.registry = registry
         self.max_batch_size = max_batch_size
 
@@ -157,13 +60,152 @@ class SequentialExecutor:
         self.execution_service_context = execution_service_context
 
     # ============================================================
+    # OUTPUT REFERENCE RESOLUTION
+    # ============================================================
+
+    @staticmethod
+    def get_output_path(value: Any, path: str) -> Any:
+        """Read a dot-separated path from a dict, list, or model."""
+
+        current = value
+
+        for part in path.split("."):
+            if isinstance(current, dict):
+                if part not in current:
+                    raise KeyError(
+                        f"Output field {part!r} not found in reference path."
+                    )
+
+                current = current[part]
+
+            elif isinstance(current, (list, tuple)):
+                if not part.isdigit():
+                    raise KeyError(
+                        f"Expected a list index, got {part!r}."
+                    )
+
+                index = int(part)
+
+                if index >= len(current):
+                    raise IndexError(
+                        f"List index {index} is out of range."
+                    )
+
+                current = current[index]
+
+            else:
+                if hasattr(current, "model_dump"):
+                    current = current.model_dump()
+
+                    if part not in current:
+                        raise KeyError(
+                            f"Output field {part!r} not found."
+                        )
+
+                    current = current[part]
+
+                elif hasattr(current, part):
+                    current = getattr(current, part)
+
+                else:
+                    raise KeyError(
+                        f"Cannot resolve {part!r} in output path {path!r}."
+                    )
+
+        return current
+
+    @classmethod
+    def resolve_input_reference(
+        cls,
+        reference: OutputReference,
+        completed_results: dict[str, Any],
+    ) -> Any:
+        """Resolve an output path and optional list-item selection."""
+
+        if reference.task_id not in completed_results:
+            raise TaskExecutionError(
+                f"Referenced task {reference.task_id} has no result."
+            )
+
+        try:
+            value = cls.get_output_path(
+                completed_results[reference.task_id],
+                reference.path,
+            )
+
+            if reference.select_by is not None:
+                if not isinstance(value, (list, tuple)):
+                    raise TypeError(
+                        f"Reference path {reference.path!r} is not a list."
+                    )
+
+                field = reference.select_by["field"]
+                expected_value = reference.select_by["value"]
+
+                matches = [
+                    item
+                    for item in value
+                    if isinstance(item, dict)
+                    and item.get(field) == expected_value
+                ]
+
+                if len(matches) != 1:
+                    raise ValueError(
+                        f"Expected one item matching "
+                        f"{field}={expected_value!r}, "
+                        f"found {len(matches)}."
+                    )
+
+                value = matches[0]
+
+            if reference.select_field is not None:
+                value = cls.get_output_path(
+                    value,
+                    reference.select_field,
+                )
+
+            return value
+
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise TaskExecutionError(
+                f"Could not resolve reference from "
+                f"{reference.task_id}.{reference.path}: {exc}"
+            ) from exc
+
+    def _resolve_arguments(
+        self,
+        task: Task,
+        completed_results: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Resolve runtime references and merge them with literal arguments."""
+
+        resolved = dict(task.arguments)
+
+        for argument_name, reference in task.input_refs.items():
+            value = self.resolve_input_reference(
+                reference=reference,
+                completed_results=completed_results,
+            )
+
+            resolved[argument_name] = value
+
+            logger.info(
+                "planner.reference_resolved "
+                "task_id=%s argument=%s source_task_id=%s source_path=%s",
+                task.id,
+                argument_name,
+                reference.task_id,
+                reference.path,
+            )
+
+        return resolved
+
+    # ============================================================
     # EXECUTION PERSISTENCE
     # ============================================================
 
     @staticmethod
     def _serialize_plan(plan: Plan) -> dict[str, Any]:
-        """Convert the Pydantic plan into JSON-compatible data."""
-
         return plan.model_dump(mode="json")
 
     @staticmethod
@@ -171,11 +213,10 @@ class SequentialExecutor:
         results: dict[str, Any],
     ) -> dict[str, Any]:
         """
-        Convert results into JSON-compatible data.
+        Convert results to JSON-compatible data for database persistence.
 
-        The default=str fallback supports values such as Decimal and
-        datetime. Prefer explicitly serializable tool outputs where
-        possible so reference paths retain their expected types.
+        Runtime results remain unchanged in memory so that downstream
+        output references can use their original values.
         """
 
         return json.loads(
@@ -209,7 +250,12 @@ class SequentialExecutor:
         unsuccessful_tasks = [
             task_id
             for task_id, status in statuses.items()
-            if status in ("failed", "skipped")
+            if status in (
+                "failed",
+                "skipped",
+                "rejected",
+                "expired",
+            )
         ]
 
         if unsuccessful_tasks:
@@ -246,7 +292,8 @@ class SequentialExecutor:
             )
 
         logger.info(
-            "planner.execution_record_created execution_id=%s user_id=%s",
+            "planner.execution_record_created "
+            "execution_id=%s user_id=%s",
             execution.id,
             user_id,
         )
@@ -309,15 +356,29 @@ class SequentialExecutor:
         self,
         task: Task,
         arguments: dict[str, Any],
-        user_id: int | None,
+        user_id: int,
         execution_id: int,
     ) -> dict[str, Any] | None:
+        """
+        Evaluate backend governance before invoking an operation.
 
-        if (
-            self.governance_engine is None
-            or self.governance_context_builder is None
-        ):
-            if task.operation == "place_order":
+        Returns:
+            None: operation is allowed.
+            dict: operation is denied or waiting for approval.
+        """
+
+        is_checkout = task.operation == "place_order"
+
+        # Checkout must always be governed.
+        if self.governance_engine is None:
+            if is_checkout:
+                logger.error(
+                    "planner.checkout_governance_unavailable "
+                    "task_id=%s execution_id=%s",
+                    task.id,
+                    execution_id,
+                )
+
                 return {
                     "ok": False,
                     "error": {
@@ -328,6 +389,24 @@ class SequentialExecutor:
 
             return None
 
+        # The current context builder loads trusted checkout facts.
+        # Do not invoke it for unrelated operations.
+        if is_checkout and self.governance_context_builder is None:
+            logger.error(
+                "planner.checkout_context_builder_unavailable "
+                "task_id=%s execution_id=%s",
+                task.id,
+                execution_id,
+            )
+
+            return {
+                "ok": False,
+                "error": {
+                    "code": "GOVERNANCE_CONTEXT_UNAVAILABLE",
+                    "message": "Checkout governance context is unavailable.",
+                },
+            }
+
         context = PolicyContext(
             task_id=task.id,
             operation=task.operation,
@@ -335,9 +414,10 @@ class SequentialExecutor:
             arguments=arguments,
         )
 
-        # Trusted facts are loaded by the backend context builder.
-        # Planner arguments must never be treated as checkout authority.
-        context = await self.governance_context_builder.build(context)
+        if is_checkout:
+            # Facts are loaded from backend services using trusted user_id.
+            # Never trust planner-supplied cart totals or ownership.
+            context = await self.governance_context_builder.build(context)
 
         decision = self.governance_engine.evaluate(context)
 
@@ -386,7 +466,6 @@ class SequentialExecutor:
         # --------------------------------------------------------
 
         if decision.decision == GovernanceDecision.REQUIRE_APPROVAL:
-
             if self.approval_service_context is None:
                 logger.error(
                     "planner.approval_service_unavailable "
@@ -404,14 +483,21 @@ class SequentialExecutor:
                     "governance": governance_data,
                 }
 
-            if user_id is None:
+            if not is_checkout:
+                logger.error(
+                    "planner.approval_required_for_unsupported_operation "
+                    "task_id=%s operation=%s",
+                    task.id,
+                    task.operation,
+                )
+
                 return {
                     "ok": False,
                     "error": {
-                        "code": "APPROVAL_USER_UNAVAILABLE",
+                        "code": "APPROVAL_WORKFLOW_UNSUPPORTED",
                         "message": (
-                            "Cannot create approval without "
-                            "an authenticated user."
+                            "Approval is required, but this operation "
+                            "does not have an approval workflow configured."
                         ),
                     },
                     "governance": governance_data,
@@ -438,8 +524,7 @@ class SequentialExecutor:
                     "error": {
                         "code": "APPROVAL_POLICY_RESULT_MISSING",
                         "message": (
-                            "Unable to identify the policy "
-                            "requiring approval."
+                            "Unable to identify the policy requiring approval."
                         ),
                     },
                     "governance": governance_data,
@@ -452,11 +537,12 @@ class SequentialExecutor:
                 "cart_snapshot",
             )
 
+            attributes = context.attributes or {}
+
             missing_facts = [
                 key
                 for key in required_fact_keys
-                if key not in context.attributes
-                or context.attributes[key] is None
+                if attributes.get(key) is None
             ]
 
             if missing_facts:
@@ -479,7 +565,7 @@ class SequentialExecutor:
                 }
 
             checkout_facts = {
-                key: context.attributes[key]
+                key: attributes[key]
                 for key in required_fact_keys
             }
 
@@ -498,6 +584,7 @@ class SequentialExecutor:
                 approval = await approval_service.create_request(
                     user_id=user_id,
                     execution_id=execution_id,
+                    waiting_task_id=task.id,
                     checkout_facts=checkout_facts,
                     policy_id=approval_policy.policy_id,
                     reason_code=approval_policy.reason_code,
@@ -530,44 +617,14 @@ class SequentialExecutor:
             "ok": False,
             "error": {
                 "code": "UNKNOWN_GOVERNANCE_DECISION",
-                "message": (
-                    "Governance returned an unsupported decision."
-                ),
+                "message": "Governance returned an unsupported decision.",
             },
             "governance": governance_data,
         }
 
     # ============================================================
-    # ARGUMENT RESOLUTION
+    # TOOL RESULT HANDLING
     # ============================================================
-
-    def _resolve_arguments(
-        self,
-        task: Task,
-        completed_results: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Resolve runtime references and merge them with literal arguments."""
-
-        resolved = dict(task.arguments)
-
-        for argument_name, reference in task.input_refs.items():
-            value = resolve_input_reference(
-                reference=reference,
-                completed_results=completed_results,
-            )
-
-            resolved[argument_name] = value
-
-            logger.info(
-                "planner.reference_resolved task_id=%s argument=%s "
-                "source_task_id=%s source_path=%s",
-                task.id,
-                argument_name,
-                reference.task_id,
-                reference.path,
-            )
-
-        return resolved
 
     @staticmethod
     def _result_indicates_failure(result: Any) -> bool:
@@ -597,7 +654,7 @@ class SequentialExecutor:
         self,
         task: Task,
         completed_results: dict[str, Any],
-        user_id: int | None,
+        user_id: int,
         execution_id: int,
     ) -> tuple[str, Any, bool]:
         """
@@ -611,8 +668,8 @@ class SequentialExecutor:
         """
 
         logger.info(
-            "planner.task_started task_id=%s operation=%s "
-            "execution_id=%s",
+            "planner.task_started "
+            "task_id=%s operation=%s execution_id=%s",
             task.id,
             task.operation,
             execution_id,
@@ -658,7 +715,6 @@ class SequentialExecutor:
                     pformat(governance_result),
                 )
 
-                # A waiting approval is not a failed operation.
                 is_waiting = (
                     governance_result.get("execution_status")
                     == "WAITING_FOR_APPROVAL"
@@ -666,17 +722,29 @@ class SequentialExecutor:
 
                 return task.id, governance_result, not is_waiting
 
-            result = await spec.execute.ainvoke(validated_arguments)
+            result = await spec.execute.ainvoke(
+                validated_arguments,
+                config={
+                    "configurable": {
+                        "user_id": user_id,
+                    }
+                },
+            )
 
             failed = self._result_indicates_failure(result)
 
             logger.info(
-                "planner.task_output task_id=%s operation=%s "
-                "output_type=%s failed=%s output=%s",
+                "planner.task_output "
+                "task_id=%s operation=%s output_type=%s failed=%s",
                 task.id,
                 task.operation,
                 type(result).__name__,
                 failed,
+            )
+
+            logger.debug(
+                "planner.task_output_details task_id=%s output=%s",
+                task.id,
                 pformat(result, sort_dicts=False),
             )
 
@@ -711,15 +779,14 @@ class SequentialExecutor:
         completed_results: dict[str, Any],
         scheduler: DependencyAwareScheduler,
         batch_number: int,
-        user_id: int | None,
+        user_id: int,
         execution_id: int,
     ) -> None:
         """Execute a selected batch concurrently and update statuses."""
 
         logger.info(
             "planner.executor_parallel_batch_started "
-            "batch_number=%d task_ids=%s batch_size=%d "
-            "execution_id=%s",
+            "batch_number=%d task_ids=%s batch_size=%d execution_id=%s",
             batch_number,
             [task.id for task in batch],
             len(batch),
@@ -798,6 +865,10 @@ class SequentialExecutor:
 
         The execution record is created before any operation runs.
         Task statuses are persisted before and after each batch.
+
+        If a task requires approval, execution pauses. No subsequent
+        batch is scheduled until the approval-resume workflow is
+        implemented.
         """
 
         if (
@@ -805,7 +876,9 @@ class SequentialExecutor:
             or not isinstance(user_id, int)
             or user_id <= 0
         ):
-            raise ValueError("A valid authenticated user_id is required.")
+            raise ValueError(
+                "A valid authenticated user_id is required."
+            )
 
         logger.info(
             "planner.execution_started user_id=%s task_count=%d",
@@ -829,8 +902,8 @@ class SequentialExecutor:
         )
 
         logger.info(
-            "planner.executor_scheduler_created execution_id=%s "
-            "task_ids=%s initial_statuses=%s prerequisites=%s",
+            "planner.executor_scheduler_created "
+            "execution_id=%s task_ids=%s initial_statuses=%s prerequisites=%s",
             execution_id,
             list(scheduler.tasks.keys()),
             scheduler.statuses,
@@ -840,8 +913,7 @@ class SequentialExecutor:
         while True:
             logger.info(
                 "planner.scheduler_requesting_next_batch "
-                "execution_id=%s completed_task_ids=%s "
-                "current_statuses=%s",
+                "execution_id=%s completed_task_ids=%s current_statuses=%s",
                 execution_id,
                 list(results.keys()),
                 scheduler.statuses,
@@ -851,8 +923,8 @@ class SequentialExecutor:
 
             if not batch:
                 logger.info(
-                    "planner.scheduler_finished execution_id=%s "
-                    "no_more_tasks=true final_statuses=%s",
+                    "planner.scheduler_finished "
+                    "execution_id=%s no_more_tasks=true final_statuses=%s",
                     execution_id,
                     scheduler.statuses,
                 )
@@ -868,9 +940,8 @@ class SequentialExecutor:
                 [task.id for task in batch],
             )
 
-            # IMPORTANT:
-            # next_batch() has marked these tasks as "running".
-            # Persist that state BEFORE invoking any tools.
+            # next_batch() has marked these tasks as running.
+            # Persist this state BEFORE invoking any tools.
             await self._persist_execution_state(
                 execution_id=execution_id,
                 results=results,
@@ -886,29 +957,51 @@ class SequentialExecutor:
                 execution_id=execution_id,
             )
 
-            # Persist completed results and the updated statuses.
+            # Persist task outcomes, including waiting_for_approval.
             await self._persist_execution_state(
                 execution_id=execution_id,
                 results=results,
                 scheduler=scheduler,
             )
 
+            # CRITICAL:
+            # Do not schedule more tasks after approval is requested.
+            # The remaining tasks stay pending until a future resume flow.
+            waiting_tasks = [
+                task_id
+                for task_id, status in scheduler.statuses.items()
+                if status == "waiting_for_approval"
+            ]
+
+            if waiting_tasks:
+                logger.info(
+                    "planner.execution_paused_for_approval "
+                    "execution_id=%s waiting_task_ids=%s",
+                    execution_id,
+                    waiting_tasks,
+                )
+                break
+
         # Record skipped tasks in the results dictionary.
         for task_id, status in scheduler.statuses.items():
             if status == "skipped":
-                results[task_id] = {
-                    "ok": False,
-                    "skipped": True,
-                    "error": "A prerequisite task did not succeed.",
-                }
+                results.setdefault(
+                    task_id,
+                    {
+                        "ok": False,
+                        "skipped": True,
+                        "error": (
+                            "A prerequisite task did not succeed."
+                        ),
+                    },
+                )
 
                 logger.warning(
-                    "planner.executor_recorded_skipped_task "
-                    "task_id=%s",
+                    "planner.executor_recorded_skipped_task task_id=%s",
                     task_id,
                 )
 
-        # Persist the final execution state as well.
+        # Persist final state once more.
         await self._persist_execution_state(
             execution_id=execution_id,
             results=results,
@@ -916,12 +1009,14 @@ class SequentialExecutor:
         )
 
         execution_status, waiting_task_id = (
-            self._get_execution_status(scheduler.export_statuses())
+            self._get_execution_status(
+                scheduler.export_statuses()
+            )
         )
 
         logger.info(
-            "planner.execution_finished execution_id=%s "
-            "execution_status=%s waiting_task_id=%s "
+            "planner.execution_finished "
+            "execution_id=%s execution_status=%s waiting_task_id=%s "
             "task_count=%d result_count=%d total_batches=%d "
             "final_statuses=%s",
             execution_id,
@@ -934,7 +1029,8 @@ class SequentialExecutor:
         )
 
         logger.debug(
-            "planner.execution_final_results execution_id=%s results=%s",
+            "planner.execution_final_results "
+            "execution_id=%s results=%s",
             execution_id,
             pformat(results, sort_dicts=False),
         )

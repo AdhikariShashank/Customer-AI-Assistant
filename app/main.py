@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
+from app.core.application import build_application_dependencies
 from app.routers import approval, chat, orders
 from .qdrant import initialize_qdrant
 from .db import create_tables
@@ -28,9 +29,17 @@ async def lifespan(app: FastAPI):
 
     yield
 
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    operation_registry = build_application_dependencies()
+
+    app.state.operation_registry = operation_registry
+
+    yield
+
 app = FastAPI(lifespan= lifespan)
-
-
 
 logging.basicConfig(
     level=logging.DEBUG,

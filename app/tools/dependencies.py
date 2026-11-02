@@ -28,15 +28,30 @@ async def execution_service_context():
             await db.rollback()
             raise
 
+from contextlib import asynccontextmanager
+
+from app.planner.operations import OperationSpec
+from app.repositories.approval import ApprovalRepository
+from app.repositories.agent_execution import AgentExecutionRepository
+from app.services.approval import ApprovalService
+
+
 @asynccontextmanager
-async def approval_service_context():
+async def approval_service_context(
+    operation_registry: dict[str, OperationSpec],
+):
     async with AsyncLocalSession() as db:
         try:
-            repository = ApprovalRepository(db)
-            service = ApprovalService(repository)
+            approval_repository = ApprovalRepository(db)
+            execution_repository = AgentExecutionRepository(db)
+
+            service = ApprovalService(
+                repository=approval_repository,
+                execution_repository=execution_repository,
+                operation_registry=operation_registry,
+            )
 
             yield service
-
             await db.commit()
 
         except Exception:

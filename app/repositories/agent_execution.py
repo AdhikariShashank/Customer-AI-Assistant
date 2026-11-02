@@ -11,6 +11,40 @@ class AgentExecutionRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+
+    async def get_by_id_for_update(
+        self,
+        execution_id: int,
+    ) -> AgentExecution | None:
+
+        stmt = (
+            select(AgentExecution)
+            .where(AgentExecution.id == execution_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    
+    async def get_by_id_for_update(
+        self,
+        execution_id: int,
+    ) -> AgentExecution | None:
+
+        stmt = (
+            select(AgentExecution)
+            .where(AgentExecution.id == execution_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+        result = await self.db.execute(stmt)
+
+        return result.scalar_one_or_none()
+
+
     async def create(
         self,
         *,

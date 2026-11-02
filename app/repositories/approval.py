@@ -12,6 +12,37 @@ class ApprovalRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+
+    async def get_expired_pending_for_update(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[ApprovalRequest]:
+        """
+        Fetch expired pending approvals and lock them for processing.
+
+        SKIP LOCKED allows multiple workers to process different
+        approval requests without waiting on each other's locks.
+        """
+
+        stmt = (
+            select(ApprovalRequest)
+            .where(
+                ApprovalRequest.status == ApprovalStatus.PENDING.value,
+                ApprovalRequest.expires_at <= now,
+            )
+            .order_by(ApprovalRequest.expires_at.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+
+        result = await self.db.execute(stmt)
+
+        return list(result.scalars().all())
+
+
     async def get_pending_approvals(
         self,
         limit: int = 20,

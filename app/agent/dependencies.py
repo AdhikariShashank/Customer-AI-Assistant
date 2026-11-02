@@ -88,13 +88,16 @@ governance_context_builder = GovernanceContextBuilder(
 )
 
 
-# 6. Initialize the executor with governance.
+# 6. Initialize the executor with governance and approval dependencies.
+
+approval_context_factory = lambda: approval_service_context(registry)
+
 executor = SequentialExecutor(
     registry=registry,
     max_batch_size=5,
     governance_engine=governance_engine,
     governance_context_builder=governance_context_builder,
-    approval_service_context=approval_service_context,
+    approval_service_context=approval_context_factory,
     execution_service_context=execution_service_context,
 )
 

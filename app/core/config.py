@@ -1,7 +1,10 @@
-from functools import lru_cache
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from functools import lru_cache
 import os
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -32,6 +35,32 @@ class Settings(BaseSettings):
     # Storage
     temp_documents_path: str = "storage/documents"
 
+    # Approval expiration
+    approval_expiration_duration_minutes: int = Field(
+        default=30,
+        gt=0,
+    )
+
+    # Approval expiration scheduler
+    approval_expiration_scheduler_enabled: bool = True
+
+    approval_expiration_check_interval_seconds: int = Field(
+        default=60,
+        gt=0,
+    )
+
+    approval_expiration_batch_size: int = Field(
+        default=100,
+        gt=0,
+    )
+
+    # Manual expiration trigger
+    approval_expiration_api_enabled: bool = True
+
+    approval_expiration_max_batch_size: int = Field(
+        default=500,
+        gt=0,
+    )
 
 
 @lru_cache()
