@@ -10,13 +10,13 @@ from app.agent.dependencies import (
 )
 from app.agent.state import PlannerAgentState
 from app.planner.validator import validate_plan
-from langchain_core.runnables import RunnableConfig
-
 
 logger = logging.getLogger(__name__)
 
 
 async def planning_node(state: PlannerAgentState):
+    """Generate and validate the execution plan."""
+
     user_messages = [
         message
         for message in state["messages"]
@@ -51,42 +51,46 @@ async def planning_node(state: PlannerAgentState):
         len(validated_plan.tasks),
     )
 
-    return {"plan": validated_plan}
+    return {
+        "plan": validated_plan,
+    }
 
 
+async def execution_node(state: PlannerAgentState, config):
+    """Execute the validated plan and return execution metadata."""
 
-async def execution_node(
-    state: PlannerAgentState,
-    config: RunnableConfig,
-):
-    configurable = config.get("configurable", {})
-    user_id = configurable.get("user_id")
-
-    # Fail closed if authenticated identity is missing or invalid.
-    if (
-        isinstance(user_id, bool)
-        or not isinstance(user_id, int)
-        or user_id < 1
-    ):
-        raise ValueError(
-            "A valid authenticated user_id is required for execution."
-        )
+    user_id = config["configurable"]["user_id"]
 
     logger.info(
-        "planner.execution_node_started user_id=%s",
+        "execution.node_started user_id=%s",
         user_id,
     )
 
-    results = await executor.execute(
-        state["plan"],
+    outcome = await executor.execute(
+        plan=state["plan"],
         user_id=user_id,
     )
 
-    return {"results": results}
+    execution_id = outcome["execution_id"]
+    execution_status = outcome["execution_status"]
+    execution_results = outcome["results"]
 
+    logger.info(
+        "execution.node_completed execution_id=%s status=%s",
+        execution_id,
+        execution_status,
+    )
+
+    return {
+        "execution_id": execution_id,
+        "execution_status": execution_status,
+        "results": execution_results,
+    }
 
 
 async def response_node(state: PlannerAgentState):
+    """Generate the final user-facing response."""
+
     user_messages = [
         message
         for message in state["messages"]
@@ -101,7 +105,15 @@ async def response_node(state: PlannerAgentState):
     if not isinstance(user_request, str):
         raise ValueError("Expected a text user request.")
 
-    execution_results = state["results"]
+    execution_id = state.get("execution_id")
+    execution_status = state.get("execution_status", "COMPLETED")
+    execution_results = state.get("results", {})
+
+    logger.info(
+        "final_response.started execution_id=%s status=%s",
+        execution_id,
+        execution_status,
+    )
 
     logger.info(
         "final_response.execution_results=%s",
@@ -114,17 +126,43 @@ async def response_node(state: PlannerAgentState):
                 "You are an ecommerce customer support assistant. "
                 "Answer the user's request using the execution results "
                 "provided below. Do not invent data. "
+
                 "Use get_active_cart as the authoritative source for "
                 "the final current cart state. Do not append items from "
                 "add_item to the cart returned by get_active_cart, "
                 "because add_item has already changed that cart. "
+
                 "Use list_orders as the source for order information. "
-                "If any operation failed, explain that failure."
+
+                "If any operation failed, explain that failure. "
+
+                "Execution status handling rules: "
+
+                "If execution_status is WAITING_FOR_APPROVAL, "
+                "tell the user that the requested operation is awaiting "
+                "admin approval. Do not claim that the order has been "
+                "placed. Do not claim that payment or checkout has "
+                "completed. Explain that the operation will proceed "
+                "only after approval. "
+
+                "If execution_status is FAILED, explain that the "
+                "execution could not be completed. Do not claim that "
+                "the requested operation succeeded. "
+
+                "If execution_status is RUNNING, explain that the "
+                "execution is still in progress. Do not claim completion. "
+
+                "If execution_status is COMPLETED, summarize the "
+                "successfully completed operations using their results. "
+                "Do not claim that an operation succeeded if its result "
+                "indicates failure."
             )
         ),
         HumanMessage(
             content=(
                 f"User request:\n{user_request}\n\n"
+                f"Execution ID:\n{execution_id}\n\n"
+                f"Execution status:\n{execution_status}\n\n"
                 f"Execution results:\n{execution_results}"
             )
         ),
@@ -133,7 +171,10 @@ async def response_node(state: PlannerAgentState):
     logger.info(
         "final_response.model_input=%s",
         [
-            {"role": message.type, "content": message.content}
+            {
+                "role": message.type,
+                "content": message.content,
+            }
             for message in messages
         ],
     )
@@ -145,4 +186,6 @@ async def response_node(state: PlannerAgentState):
         response.content,
     )
 
-    return {"messages": [response]}
+    return {
+        "messages": [response],
+    }

@@ -2,9 +2,9 @@ import logging
 from pprint import pformat
 from typing import Literal
 
+from app.planner.exceptions import TaskExecutionError
 from app.planner.operations import OperationSpec
 from app.planner.schemas import Plan, Task
-from app.planner.exceptions import TaskExecutionError
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,15 @@ TaskStatus = Literal[
     "waiting_for_approval",
 ]
 
+ALLOWED_STATUSES = {
+    "pending",
+    "running",
+    "succeeded",
+    "failed",
+    "skipped",
+    "waiting_for_approval",
+}
+
 
 class DependencyAwareScheduler:
     """Select ready, safe batches without executing operations."""
@@ -26,17 +35,14 @@ class DependencyAwareScheduler:
         plan: Plan,
         registry: dict[str, OperationSpec],
         max_batch_size: int = 5,
-    ):
+        statuses: dict[str, TaskStatus] | None = None,
+    ) -> None:
         logger.info(
             "planner.scheduler_creation_started max_batch_size=%d",
             max_batch_size,
         )
 
         if max_batch_size < 1:
-            logger.error(
-                "planner.scheduler_invalid_batch_size max_batch_size=%d",
-                max_batch_size,
-            )
             raise ValueError("max_batch_size must be at least 1.")
 
         self.registry = registry
@@ -50,34 +56,70 @@ class DependencyAwareScheduler:
             "planner.scheduler_initial_plan task_count=%d plan=%s",
             len(plan.tasks),
             pformat(
-                [
-                    task.model_dump(mode="python")
-                    for task in plan.tasks
-                ],
-                sort_dicts=False,
-            ),
-        )
-
-        logger.debug(
-            "planner.scheduler_registry operations=%s",
-            pformat(
-                {
-                    name: {
-                        "access": spec.access,
-                        "output_description": spec.output_description,
-                    }
-                    for name, spec in registry.items()
-                },
+                [task.model_dump(mode="python") for task in plan.tasks],
                 sort_dicts=False,
             ),
         )
 
         self._initialize(plan)
 
+        if statuses is not None:
+            self.restore_statuses(statuses)
+
         self._log_state("initialization_complete")
 
+    def restore_statuses(
+        self,
+        statuses: dict[str, TaskStatus],
+    ) -> None:
+        """Restore persisted statuses after validating their safety."""
+
+        if set(statuses) != set(self.tasks):
+            raise TaskExecutionError(
+                "Persisted task statuses do not match the execution plan."
+            )
+
+        for task_id, status in statuses.items():
+            if status not in ALLOWED_STATUSES:
+                raise TaskExecutionError(
+                    f"Invalid persisted status for task {task_id}: {status}"
+                )
+
+        running_tasks = [
+            task_id
+            for task_id, status in statuses.items()
+            if status == "running"
+        ]
+
+        if running_tasks:
+            logger.error(
+                "planner.scheduler_restore_rejected_running_tasks "
+                "task_ids=%s",
+                running_tasks,
+            )
+            raise TaskExecutionError(
+                "Cannot automatically restore execution containing "
+                f"running tasks: {running_tasks}. Their side effects "
+                "must be reconciled before retrying."
+            )
+
+        self.statuses = statuses.copy()
+
+        logger.info(
+            "planner.scheduler_statuses_restored statuses=%s",
+            self.statuses,
+        )
+
+        self._log_state("statuses_restored")
+
+    def export_statuses(self) -> dict[str, TaskStatus]:
+        """Return a copy suitable for persistence."""
+
+        return self.statuses.copy()
 
     def mark_waiting_for_approval(self, task_id: str) -> None:
+        self._validate_task_id(task_id)
+
         previous_status = self.statuses[task_id]
         self.statuses[task_id] = "waiting_for_approval"
 
@@ -93,9 +135,61 @@ class DependencyAwareScheduler:
             f"after_task_waiting_for_approval:{task_id}"
         )
 
-    def _log_state(self, event: str) -> None:
-        """Log the scheduler's current internal state."""
+    def mark_succeeded(self, task_id: str) -> None:
+        self._validate_task_id(task_id)
 
+        previous_status = self.statuses[task_id]
+        self.statuses[task_id] = "succeeded"
+
+        logger.info(
+            "planner.scheduler_task_status_updated "
+            "task_id=%s previous_status=%s new_status=%s",
+            task_id,
+            previous_status,
+            self.statuses[task_id],
+        )
+
+        self._log_state(f"after_task_succeeded:{task_id}")
+
+    def mark_failed(self, task_id: str) -> None:
+        self._validate_task_id(task_id)
+
+        previous_status = self.statuses[task_id]
+        self.statuses[task_id] = "failed"
+
+        logger.warning(
+            "planner.scheduler_task_status_updated "
+            "task_id=%s previous_status=%s new_status=%s",
+            task_id,
+            previous_status,
+            self.statuses[task_id],
+        )
+
+        self._log_state(f"after_task_failed:{task_id}")
+
+    def mark_skipped(self, task_id: str) -> None:
+        self._validate_task_id(task_id)
+
+        previous_status = self.statuses[task_id]
+        self.statuses[task_id] = "skipped"
+
+        logger.warning(
+            "planner.scheduler_task_status_updated "
+            "task_id=%s previous_status=%s new_status=%s",
+            task_id,
+            previous_status,
+            self.statuses[task_id],
+        )
+
+        self._log_state(f"after_task_skipped:{task_id}")
+
+    def _validate_task_id(self, task_id: str) -> None:
+        if task_id not in self.statuses:
+            raise TaskExecutionError(
+                f"Unknown task ID: {task_id}"
+            )
+
+    def _log_state(self, event: str) -> None:
         logger.debug(
             "planner.scheduler_state event=%s "
             "tasks=%s statuses=%s prerequisites=%s",
@@ -123,24 +217,13 @@ class DependencyAwareScheduler:
             len(plan.tasks),
         )
 
-        # Build a task lookup and initialize task statuses.
         for task in plan.tasks:
             if task.id in self.tasks:
-                logger.error(
-                    "planner.scheduler_duplicate_task_id task_id=%s",
-                    task.id,
-                )
                 raise TaskExecutionError(
                     f"Duplicate task ID: {task.id}"
                 )
 
             if task.operation not in self.registry:
-                logger.error(
-                    "planner.scheduler_unsupported_operation "
-                    "task_id=%s operation=%s",
-                    task.id,
-                    task.operation,
-                )
                 raise TaskExecutionError(
                     f"Unsupported operation: {task.operation}"
                 )
@@ -166,10 +249,6 @@ class DependencyAwareScheduler:
             len(self.tasks),
         )
 
-        # Dependencies include explicitly declared prerequisites
-        # and tasks referenced by input_refs.
-        logger.info("planner.scheduler_building_prerequisites")
-
         for task in plan.tasks:
             prerequisites = set(task.depends_on)
 
@@ -180,21 +259,7 @@ class DependencyAwareScheduler:
 
             prerequisites.update(reference_dependencies)
 
-            logger.debug(
-                "planner.scheduler_dependency_analysis "
-                "task_id=%s explicit_dependencies=%s "
-                "input_ref_dependencies=%s combined_dependencies=%s",
-                task.id,
-                sorted(task.depends_on),
-                sorted(reference_dependencies),
-                sorted(prerequisites),
-            )
-
             if task.id in prerequisites:
-                logger.error(
-                    "planner.scheduler_self_dependency task_id=%s",
-                    task.id,
-                )
                 raise TaskExecutionError(
                     f"Task {task.id} cannot depend on itself."
                 )
@@ -202,12 +267,6 @@ class DependencyAwareScheduler:
             unknown = prerequisites - set(self.tasks)
 
             if unknown:
-                logger.error(
-                    "planner.scheduler_unknown_dependencies "
-                    "task_id=%s unknown_dependencies=%s",
-                    task.id,
-                    sorted(unknown),
-                )
                 raise TaskExecutionError(
                     f"Task {task.id} references unknown tasks: "
                     f"{sorted(unknown)}"
@@ -215,16 +274,13 @@ class DependencyAwareScheduler:
 
             self.prerequisites[task.id] = prerequisites
 
-            logger.info(
+            logger.debug(
                 "planner.scheduler_prerequisites_registered "
                 "task_id=%s prerequisites=%s",
                 task.id,
                 sorted(prerequisites),
             )
 
-        self._log_state("before_cycle_validation")
-
-        # Detect cycles before any operation can execute.
         self._validate_acyclic()
 
         logger.info(
@@ -243,16 +299,8 @@ class DependencyAwareScheduler:
         }
 
         completed: set[str] = set()
-        round_number = 0
-
-        logger.debug(
-            "planner.scheduler_cycle_validation_initial_dependencies=%s",
-            pformat(remaining, sort_dicts=False),
-        )
 
         while True:
-            round_number += 1
-
             ready = {
                 task_id
                 for task_id, dependencies in remaining.items()
@@ -260,34 +308,23 @@ class DependencyAwareScheduler:
                 and dependencies.issubset(completed)
             }
 
-            logger.debug(
-                "planner.scheduler_cycle_validation_round "
-                "round=%d completed=%s ready=%s",
-                round_number,
-                sorted(completed),
-                sorted(ready),
-            )
-
             if not ready:
                 break
 
             completed.update(ready)
 
         if len(completed) != len(self.tasks):
-            cyclic_or_blocked = sorted(
-                set(self.tasks) - completed
-            )
+            unresolved = sorted(set(self.tasks) - completed)
 
             logger.error(
                 "planner.scheduler_cycle_validation_failed "
-                "unresolved_tasks=%s completed_tasks=%s",
-                cyclic_or_blocked,
-                sorted(completed),
+                "unresolved_tasks=%s",
+                unresolved,
             )
 
             raise TaskExecutionError(
                 "Dependency cycle detected among tasks: "
-                f"{cyclic_or_blocked}"
+                f"{unresolved}"
             )
 
         logger.info(
@@ -298,8 +335,6 @@ class DependencyAwareScheduler:
 
     def _skip_blocked_tasks(self) -> None:
         """Skip pending tasks whose prerequisites failed or were skipped."""
-
-        logger.debug("planner.scheduler_blocked_task_check_started")
 
         changed = True
 
@@ -313,22 +348,17 @@ class DependencyAwareScheduler:
                 failed_dependencies = [
                     dependency
                     for dependency in dependencies
-                    if self.statuses[dependency]
-                    in ("failed", "skipped")
+                    if self.statuses[dependency] in ("failed", "skipped")
                 ]
 
                 if failed_dependencies:
-                    previous_status = self.statuses[task_id]
                     self.statuses[task_id] = "skipped"
                     changed = True
 
                     logger.warning(
                         "planner.task_skipped task_id=%s "
-                        "previous_status=%s new_status=%s "
                         "failed_dependencies=%s",
                         task_id,
-                        previous_status,
-                        self.statuses[task_id],
                         failed_dependencies,
                     )
 
@@ -355,12 +385,11 @@ class DependencyAwareScheduler:
         return ready_tasks
 
     def next_batch(self) -> list[Task]:
-        """Return the next safe batch, or an empty list when finished."""
+        """Select the next safe batch and mark its tasks as running."""
 
         logger.info("planner.scheduler_next_batch_started")
 
         self._log_state("before_next_batch")
-
         self._skip_blocked_tasks()
 
         pending = [
@@ -369,15 +398,10 @@ class DependencyAwareScheduler:
             if status == "pending"
         ]
 
-        logger.debug(
-            "planner.scheduler_pending_tasks task_ids=%s",
-            pending,
-        )
-
         if not pending:
             logger.info(
                 "planner.scheduler_no_pending_tasks "
-                "all_tasks_terminal=true"
+                "all_tasks_terminal_or_waiting=true"
             )
             self._log_state("execution_finished")
             return []
@@ -400,33 +424,16 @@ class DependencyAwareScheduler:
                 )
                 return []
 
-            logger.error(
-                "planner.scheduler_no_ready_tasks "
-                "pending_tasks=%s statuses=%s prerequisites=%s",
-                pending,
-                pformat(self.statuses, sort_dicts=False),
-                pformat(self.prerequisites, sort_dicts=False),
-            )
-
             raise TaskExecutionError(
                 "Pending tasks remain, but no tasks are ready: "
                 f"{pending}"
             )
 
-        # Read-only operations can share a batch.
         ready_reads = [
             task
             for task in ready
             if self.registry[task.operation].access == "read"
         ]
-
-        logger.debug(
-            "planner.scheduler_batch_candidates "
-            "ready_tasks=%s ready_reads=%s max_batch_size=%d",
-            [task.id for task in ready],
-            [task.id for task in ready_reads],
-            self.max_batch_size,
-        )
 
         if ready_reads:
             batch = ready_reads[: self.max_batch_size]
@@ -436,7 +443,7 @@ class DependencyAwareScheduler:
                 "reason=ready_read_operations"
             )
         else:
-            # Conservative policy: never put multiple writes in a batch.
+            # Serialize writes to avoid concurrent write side effects.
             batch = [ready[0]]
 
             logger.info(
@@ -444,66 +451,15 @@ class DependencyAwareScheduler:
                 "reason=serialize_write_operations"
             )
 
+        for task in batch:
+            self.statuses[task.id] = "running"
+
         logger.info(
             "planner.batch_selected task_ids=%s operations=%s",
             [task.id for task in batch],
             [task.operation for task in batch],
         )
 
-        for task in batch:
-            previous_status = self.statuses[task.id]
-            self.statuses[task.id] = "running"
-
-            logger.debug(
-                "planner.scheduler_status_changed "
-                "task_id=%s previous_status=%s new_status=%s",
-                task.id,
-                previous_status,
-                self.statuses[task.id],
-            )
-
         self._log_state("after_batch_selected")
 
         return batch
-
-    def mark_succeeded(self, task_id: str) -> None:
-        previous_status = self.statuses[task_id]
-        self.statuses[task_id] = "succeeded"
-
-        logger.info(
-            "planner.scheduler_task_status_updated "
-            "task_id=%s previous_status=%s new_status=%s",
-            task_id,
-            previous_status,
-            self.statuses[task_id],
-        )
-
-        self._log_state(f"after_task_succeeded:{task_id}")
-
-    def mark_failed(self, task_id: str) -> None:
-        previous_status = self.statuses[task_id]
-        self.statuses[task_id] = "failed"
-
-        logger.warning(
-            "planner.scheduler_task_status_updated "
-            "task_id=%s previous_status=%s new_status=%s",
-            task_id,
-            previous_status,
-            self.statuses[task_id],
-        )
-
-        self._log_state(f"after_task_failed:{task_id}")
-
-    def mark_skipped(self, task_id: str) -> None:
-        previous_status = self.statuses[task_id]
-        self.statuses[task_id] = "skipped"
-
-        logger.warning(
-            "planner.scheduler_task_status_updated "
-            "task_id=%s previous_status=%s new_status=%s",
-            task_id,
-            previous_status,
-            self.statuses[task_id],
-        )
-
-        self._log_state(f"after_task_skipped:{task_id}")

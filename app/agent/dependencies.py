@@ -7,6 +7,7 @@ from app.tools.product import create_product_tools
 from app.tools.dependencies import (
     approval_service_context,
     cart_service_context,
+    execution_service_context,
     order_service_context,
     product_service_context,
 )
@@ -90,8 +91,10 @@ governance_context_builder = GovernanceContextBuilder(
 # 6. Initialize the executor with governance.
 executor = SequentialExecutor(
     registry=registry,
+    max_batch_size=5,
     governance_engine=governance_engine,
     governance_context_builder=governance_context_builder,
     approval_service_context=approval_service_context,
+    execution_service_context=execution_service_context,
 )
 
