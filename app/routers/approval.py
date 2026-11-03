@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
+from app.models.approval_request import ApprovalStatus
 from app.models.user import User
 from app.security import require_admin
 from app.routers.dependencies import get_approval_service
@@ -56,6 +57,7 @@ async def get_approval(
         message="Approval request fetched successfully",
     )
 
+
 @router.post(
     "/{approval_id}/approve",
     response_model=SuccessResponse[ApprovalResponse],
@@ -72,9 +74,15 @@ async def approve_request(
         comment=request.comment,
     )
 
+    message = (
+        "Approval request has expired."
+        if approval.status == ApprovalStatus.EXPIRED.value
+        else "Approval request approved successfully"
+    )
+
     return SuccessResponse(
         data=ApprovalResponse.model_validate(approval),
-        message="Approval request approved successfully",
+        message=message,
     )
 
 
@@ -94,7 +102,32 @@ async def reject_request(
         comment=request.comment,
     )
 
+    message = (
+        "Approval request has expired."
+        if approval.status == ApprovalStatus.EXPIRED.value
+        else "Approval request rejected successfully"
+    )
+
     return SuccessResponse(
         data=ApprovalResponse.model_validate(approval),
-        message="Approval request rejected successfully",
+        message=message,
+    )
+
+
+@router.post(
+    "/expire",
+    response_model=SuccessResponse[dict],
+)
+async def expire_pending_approvals(
+    limit: int = Query(default=100, ge=1, le=500),
+    current_admin: User = Depends(require_admin),
+    service: ApprovalService = Depends(get_approval_service),
+):
+    result = await service.expire_pending_approvals(
+        limit=limit,
+    )
+
+    return SuccessResponse(
+        data=result,
+        message="Expired approval requests processed successfully",
     )

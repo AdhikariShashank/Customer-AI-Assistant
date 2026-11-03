@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 # Must match the actual PostgreSQL partial unique index name.
-PENDING_APPROVAL_UNIQUE_INDEX = "uq_approval_pending_cart"
+PENDING_APPROVAL_UNIQUE_INDEX = "uq_approval_requests_pending_cart"
 
 
 
@@ -51,6 +51,55 @@ class ApprovalService:
             )
         )
 
+    async def expire_pending_approvals(
+        self,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """
+        Expire pending approval requests whose expiry time has passed.
+
+        Each expired approval is also used to resolve its associated
+        waiting execution with an APPROVAL_EXPIRED outcome.
+        """
+
+        if limit < 1:
+            raise AppException(
+                code="INVALID_BATCH_LIMIT",
+                message="Expiry batch limit must be greater than zero.",
+            )
+
+        now = datetime.now(timezone.utc)
+
+        expired_approvals = (
+            await self.repository.get_expired_pending_for_update(
+                now=now,
+                limit=limit,
+            )
+        )
+
+        expired_approval_ids: list[int] = []
+
+        for approval in expired_approvals:
+            # Mark the approval as expired.
+            await self.repository.mark_expired(approval)
+
+            # Resolve the associated execution, if one exists.
+            await self._resolve_execution(
+                approval=approval,
+                outcome="expired",
+            )
+
+            expired_approval_ids.append(approval.id)
+
+        logger.info(
+            "Approval expiry batch completed. processed_count=%s",
+            len(expired_approval_ids),
+        )
+
+        return {
+            "processed_count": len(expired_approval_ids),
+            "expired_approval_ids": expired_approval_ids,
+        }
 
     async def _resolve_execution(
         self,
