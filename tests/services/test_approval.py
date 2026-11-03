@@ -1,175 +1,223 @@
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.exceptions import AppException
+from app.models.approval_request import ApprovalStatus
+from app.repositories.agent_execution import AgentExecutionRepository
+from app.repositories.approval import ApprovalRepository
 from app.services.approval import ApprovalService
 
 
 @pytest.fixture
-def approval_service():
-    """
-    Create ApprovalService without invoking its constructor.
+def approval_repository():
+    return AsyncMock(spec=ApprovalRepository)
 
-    These tests focus only on expiry processing, so database
-    repositories and execution resolution are mocked.
-    """
-    service = ApprovalService.__new__(ApprovalService)
 
-    service.repository = SimpleNamespace(
-        get_expired_pending_for_update=AsyncMock(),
-        mark_expired=AsyncMock(),
+@pytest.fixture
+def execution_repository():
+    return AsyncMock(spec=AgentExecutionRepository)
+
+
+@pytest.fixture
+def service(approval_repository, execution_repository):
+    return ApprovalService(
+        repository=approval_repository,
+        execution_repository=execution_repository,
+        operation_registry={},
+        approval_ttl=timedelta(minutes=30),
     )
 
-    service._resolve_execution = AsyncMock()
 
-    return service
+@pytest.fixture
+def valid_cart_snapshot():
+    return {
+        "cart_id": 101,
+        "total_amount": "6500.00",
+        "currency": "INR",
+        "items": [
+            {
+                "product_id": 10,
+                "quantity": 2,
+                "unit_price": "3250.00",
+                "subtotal": "6500.00",
+            }
+        ],
+    }
+
+
+@pytest.fixture
+def approved_request(valid_cart_snapshot):
+    return SimpleNamespace(
+        id=50,
+        user_id=5,
+        cart_id=101,
+        operation="place_order",
+        status=ApprovalStatus.APPROVED.value,
+        requested_amount=Decimal("6500.00"),
+        currency="INR",
+        cart_snapshot=valid_cart_snapshot,
+        execution_id=20,
+        waiting_task_id="task_3",
+    )
 
 
 @pytest.mark.asyncio
-async def test_expire_pending_approvals_when_no_expired_records(
-    approval_service,
+async def test_get_approved_request_success(
+    service,
+    approval_repository,
+    approved_request,
 ):
-    approval_service.repository.get_expired_pending_for_update.return_value = []
+    approval_repository.get_by_id.return_value = approved_request
 
-    result = await approval_service.expire_pending_approvals()
-
-    assert result == {
-        "processed_count": 0,
-        "expired_approval_ids": [],
-    }
-
-    approval_service.repository.get_expired_pending_for_update.assert_awaited_once()
-
-    approval_service.repository.mark_expired.assert_not_awaited()
-    approval_service._resolve_execution.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_expire_single_pending_approval(approval_service):
-    approval = SimpleNamespace(id=101)
-
-    approval_service.repository.get_expired_pending_for_update.return_value = [
-        approval
-    ]
-
-    result = await approval_service.expire_pending_approvals()
-
-    assert result == {
-        "processed_count": 1,
-        "expired_approval_ids": [101],
-    }
-
-    approval_service.repository.mark_expired.assert_awaited_once_with(
-        approval
+    result = await service.get_approved_request(
+        approval_id=50,
+        user_id=5,
+        execution_id=20,
+        waiting_task_id="task_3",
     )
 
-    approval_service._resolve_execution.assert_awaited_once_with(
-        approval=approval,
-        outcome="expired",
+    assert result is approved_request
+
+    approval_repository.get_by_id.assert_awaited_once_with(
+        approval_id=50,
     )
 
 
 @pytest.mark.asyncio
-async def test_expire_multiple_pending_approvals(approval_service):
-    approvals = [
-        SimpleNamespace(id=101),
-        SimpleNamespace(id=102),
-        SimpleNamespace(id=103),
-    ]
+async def test_get_approved_request_not_found(
+    service,
+    approval_repository,
+):
+    approval_repository.get_by_id.return_value = None
 
-    approval_service.repository.get_expired_pending_for_update.return_value = (
-        approvals
-    )
-
-    result = await approval_service.expire_pending_approvals(limit=10)
-
-    assert result == {
-        "processed_count": 3,
-        "expired_approval_ids": [101, 102, 103],
-    }
-
-    assert (
-        approval_service.repository.mark_expired.await_count == 3
-    )
-
-    assert (
-        approval_service._resolve_execution.await_count == 3
-    )
-
-    for approval in approvals:
-        approval_service.repository.mark_expired.assert_any_await(
-            approval
+    with pytest.raises(AppException) as exc_info:
+        await service.get_approved_request(
+            approval_id=50,
+            user_id=5,
+            execution_id=20,
+            waiting_task_id="task_3",
         )
 
-        approval_service._resolve_execution.assert_any_await(
-            approval=approval,
-            outcome="expired",
+    assert exc_info.value.code == "APPROVAL_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_get_approved_request_wrong_user(
+    service,
+    approval_repository,
+    approved_request,
+):
+    approval_repository.get_by_id.return_value = approved_request
+
+    with pytest.raises(AppException) as exc_info:
+        await service.get_approved_request(
+            approval_id=50,
+            user_id=99,
+            execution_id=20,
+            waiting_task_id="task_3",
         )
 
-
-@pytest.mark.asyncio
-async def test_expiry_processing_passes_batch_limit_to_repository(
-    approval_service,
-):
-    approval_service.repository.get_expired_pending_for_update.return_value = []
-
-    await approval_service.expire_pending_approvals(limit=25)
-
-    call_kwargs = (
-        approval_service.repository
-        .get_expired_pending_for_update
-        .await_args.kwargs
-    )
-
-    assert call_kwargs["limit"] == 25
-
-    # The service should use a timezone-aware UTC timestamp.
-    assert isinstance(call_kwargs["now"], datetime)
-    assert call_kwargs["now"].tzinfo is not None
-    assert call_kwargs["now"].utcoffset().total_seconds() == 0
+    assert exc_info.value.code == "APPROVAL_ACCESS_DENIED"
 
 
 @pytest.mark.asyncio
-async def test_expiry_processing_stops_if_mark_expired_fails(
-    approval_service,
+async def test_get_approved_request_not_approved(
+    service,
+    approval_repository,
+    approved_request,
 ):
-    approval = SimpleNamespace(id=101)
+    approved_request.status = ApprovalStatus.PENDING.value
+    approval_repository.get_by_id.return_value = approved_request
 
-    approval_service.repository.get_expired_pending_for_update.return_value = [
-        approval
-    ]
+    with pytest.raises(AppException) as exc_info:
+        await service.get_approved_request(
+            approval_id=50,
+            user_id=5,
+            execution_id=20,
+            waiting_task_id="task_3",
+        )
 
-    approval_service.repository.mark_expired.side_effect = RuntimeError(
-        "Database update failed"
-    )
-
-    with pytest.raises(RuntimeError, match="Database update failed"):
-        await approval_service.expire_pending_approvals()
-
-    # Execution must not be resolved if marking the approval failed.
-    approval_service._resolve_execution.assert_not_awaited()
+    assert exc_info.value.code == "APPROVAL_NOT_APPROVED"
 
 
 @pytest.mark.asyncio
-async def test_expiry_processing_propagates_execution_resolution_failure(
-    approval_service,
+async def test_get_approved_request_execution_mismatch(
+    service,
+    approval_repository,
+    approved_request,
 ):
-    approval = SimpleNamespace(id=101)
+    approval_repository.get_by_id.return_value = approved_request
 
-    approval_service.repository.get_expired_pending_for_update.return_value = [
-        approval
-    ]
+    with pytest.raises(AppException) as exc_info:
+        await service.get_approved_request(
+            approval_id=50,
+            user_id=5,
+            execution_id=999,
+            waiting_task_id="task_3",
+        )
 
-    approval_service._resolve_execution.side_effect = RuntimeError(
-        "Execution resolution failed"
-    )
+    assert exc_info.value.code == "APPROVAL_EXECUTION_MISMATCH"
 
-    with pytest.raises(RuntimeError, match="Execution resolution failed"):
-        await approval_service.expire_pending_approvals()
 
-    approval_service.repository.mark_expired.assert_awaited_once_with(
-        approval
-    )
+@pytest.mark.asyncio
+async def test_get_approved_request_task_mismatch(
+    service,
+    approval_repository,
+    approved_request,
+):
+    approval_repository.get_by_id.return_value = approved_request
+
+    with pytest.raises(AppException) as exc_info:
+        await service.get_approved_request(
+            approval_id=50,
+            user_id=5,
+            execution_id=20,
+            waiting_task_id="task_99",
+        )
+
+    assert exc_info.value.code == "APPROVAL_TASK_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_get_approved_request_unsupported_operation(
+    service,
+    approval_repository,
+    approved_request,
+):
+    approved_request.operation = "delete_product"
+    approval_repository.get_by_id.return_value = approved_request
+
+    with pytest.raises(AppException) as exc_info:
+        await service.get_approved_request(
+            approval_id=50,
+            user_id=5,
+            execution_id=20,
+            waiting_task_id="task_3",
+        )
+
+    assert exc_info.value.code == "APPROVAL_OPERATION_UNSUPPORTED"
+
+
+@pytest.mark.asyncio
+async def test_get_approved_request_invalid_snapshot(
+    service,
+    approval_repository,
+    approved_request,
+):
+    approved_request.cart_snapshot = None
+    approval_repository.get_by_id.return_value = approved_request
+
+    with pytest.raises(AppException) as exc_info:
+        await service.get_approved_request(
+            approval_id=50,
+            user_id=5,
+            execution_id=20,
+            waiting_task_id="task_3",
+        )
+
+    assert exc_info.value.code == "INVALID_CHECKOUT_FACTS"

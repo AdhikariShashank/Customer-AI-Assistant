@@ -1,11 +1,13 @@
 
 import asyncio
+from copy import deepcopy
 import json
 import logging
 from contextlib import AbstractAsyncContextManager
 from pprint import pformat
 from typing import Any, Callable
 
+from app.models.agent_execution import ExecutionStatus
 from app.planner.exceptions import TaskExecutionError
 from app.planner.operations import OperationSpec
 from app.planner.scheduler import DependencyAwareScheduler
@@ -299,6 +301,23 @@ class SequentialExecutor:
         )
 
         return execution.id
+
+    async def _claim_execution_for_resume(
+        self,
+        *,
+        execution_id: int,
+        user_id: int,
+        waiting_task_id: str,
+    ):
+        async with self.execution_service_context() as service:
+            execution = await service.claim_for_resume(
+                execution_id=execution_id,
+                user_id=user_id,
+                waiting_task_id=waiting_task_id,
+            )
+
+        # Transaction is committed here.
+        return execution
 
     async def _persist_execution_state(
         self,
@@ -656,6 +675,9 @@ class SequentialExecutor:
         completed_results: dict[str, Any],
         user_id: int,
         execution_id: int,
+        approved_task_id: str | None = None,
+        approval_id: int | None = None,
+        expected_cart_snapshot: dict[str, Any] | None = None,
     ) -> tuple[str, Any, bool]:
         """
         Execute one task.
@@ -700,12 +722,33 @@ class SequentialExecutor:
                 pformat(validated_arguments, sort_dicts=False),
             )
 
-            governance_result = await self._check_governance(
-                task=task,
-                arguments=validated_arguments,
-                user_id=user_id,
-                execution_id=execution_id,
+            is_approved_task = (
+                approved_task_id is not None
+                and task.id == approved_task_id
+                and task.operation == "place_order"
             )
+
+            if approved_task_id is not None and task.id == approved_task_id:
+                if task.operation != "place_order":
+                    raise TaskExecutionError(
+                        "Approval bypass is only supported for place_order."
+                    )
+
+            if not is_approved_task:
+                governance_result = await self._check_governance(
+                    task=task,
+                    arguments=validated_arguments,
+                    user_id=user_id,
+                    execution_id=execution_id,
+                )
+            else:
+                logger.info(
+                    "planner.approved_task_governance_bypass "
+                    "task_id=%s execution_id=%s",
+                    task.id,
+                    execution_id,
+                )
+                governance_result = None
 
             if governance_result is not None:
                 logger.warning(
@@ -722,12 +765,25 @@ class SequentialExecutor:
 
                 return task.id, governance_result, not is_waiting
 
+            configurable = {
+                "user_id": user_id,
+            }
+
+            if is_approved_task:
+                if approval_id is None or expected_cart_snapshot is None:
+                    raise TaskExecutionError(
+                        "Validated approval context is required for checkout resumption."
+                    )
+
+                configurable.update({
+                    "approval_id": approval_id,
+                    "expected_cart_snapshot": expected_cart_snapshot,
+                })
+
             result = await spec.execute.ainvoke(
                 validated_arguments,
                 config={
-                    "configurable": {
-                        "user_id": user_id,
-                    }
+                    "configurable": configurable,
                 },
             )
 
@@ -781,6 +837,9 @@ class SequentialExecutor:
         batch_number: int,
         user_id: int,
         execution_id: int,
+        approved_task_id: str | None = None,
+        approval_id: int | None = None,
+        expected_cart_snapshot: dict[str, Any] | None = None,
     ) -> None:
         """Execute a selected batch concurrently and update statuses."""
 
@@ -800,6 +859,9 @@ class SequentialExecutor:
                     completed_results=completed_results,
                     user_id=user_id,
                     execution_id=execution_id,
+                    approved_task_id=approved_task_id,
+                    approval_id=approval_id,
+                    expected_cart_snapshot=expected_cart_snapshot,
                 )
                 for task in batch
             ]
@@ -851,64 +913,20 @@ class SequentialExecutor:
             scheduler.statuses,
         )
 
-    # ============================================================
-    # MAIN EXECUTION LOOP
-    # ============================================================
-
-    async def execute(
+    async def _run_execution_loop(
         self,
+        *,
         plan: Plan,
+        scheduler: DependencyAwareScheduler,
+        results: dict[str, Any],
         user_id: int,
+        execution_id: int,
+        batch_number: int = 0,
+        approved_task_id: str | None = None,
+        approval_id: int | None = None,
+        expected_cart_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """
-        Execute the plan and persist its progress.
-
-        The execution record is created before any operation runs.
-        Task statuses are persisted before and after each batch.
-
-        If a task requires approval, execution pauses. No subsequent
-        batch is scheduled until the approval-resume workflow is
-        implemented.
-        """
-
-        if (
-            isinstance(user_id, bool)
-            or not isinstance(user_id, int)
-            or user_id <= 0
-        ):
-            raise ValueError(
-                "A valid authenticated user_id is required."
-            )
-
-        logger.info(
-            "planner.execution_started user_id=%s task_count=%d",
-            user_id,
-            len(plan.tasks),
-        )
-
-        scheduler = DependencyAwareScheduler(
-            plan=plan,
-            registry=self.registry,
-            max_batch_size=self.max_batch_size,
-        )
-
-        results: dict[str, Any] = {}
-        batch_number = 0
-
-        execution_id = await self._create_execution_record(
-            plan=plan,
-            user_id=user_id,
-            scheduler=scheduler,
-        )
-
-        logger.info(
-            "planner.executor_scheduler_created "
-            "execution_id=%s task_ids=%s initial_statuses=%s prerequisites=%s",
-            execution_id,
-            list(scheduler.tasks.keys()),
-            scheduler.statuses,
-            scheduler.prerequisites,
-        )
+        """Run or resume an existing execution."""
 
         while True:
             logger.info(
@@ -940,8 +958,6 @@ class SequentialExecutor:
                 [task.id for task in batch],
             )
 
-            # next_batch() has marked these tasks as running.
-            # Persist this state BEFORE invoking any tools.
             await self._persist_execution_state(
                 execution_id=execution_id,
                 results=results,
@@ -955,18 +971,17 @@ class SequentialExecutor:
                 batch_number=batch_number,
                 user_id=user_id,
                 execution_id=execution_id,
+                approved_task_id=approved_task_id,
+                approval_id=approval_id,
+                expected_cart_snapshot=expected_cart_snapshot,
             )
 
-            # Persist task outcomes, including waiting_for_approval.
             await self._persist_execution_state(
                 execution_id=execution_id,
                 results=results,
                 scheduler=scheduler,
             )
 
-            # CRITICAL:
-            # Do not schedule more tasks after approval is requested.
-            # The remaining tasks stay pending until a future resume flow.
             waiting_tasks = [
                 task_id
                 for task_id, status in scheduler.statuses.items()
@@ -982,7 +997,7 @@ class SequentialExecutor:
                 )
                 break
 
-        # Record skipped tasks in the results dictionary.
+        # Record skipped tasks.
         for task_id, status in scheduler.statuses.items():
             if status == "skipped":
                 results.setdefault(
@@ -990,35 +1005,24 @@ class SequentialExecutor:
                     {
                         "ok": False,
                         "skipped": True,
-                        "error": (
-                            "A prerequisite task did not succeed."
-                        ),
+                        "error": "A prerequisite task did not succeed.",
                     },
                 )
 
-                logger.warning(
-                    "planner.executor_recorded_skipped_task task_id=%s",
-                    task_id,
-                )
-
-        # Persist final state once more.
         await self._persist_execution_state(
             execution_id=execution_id,
             results=results,
             scheduler=scheduler,
         )
 
-        execution_status, waiting_task_id = (
-            self._get_execution_status(
-                scheduler.export_statuses()
-            )
+        execution_status, waiting_task_id = self._get_execution_status(
+            scheduler.export_statuses()
         )
 
         logger.info(
             "planner.execution_finished "
             "execution_id=%s execution_status=%s waiting_task_id=%s "
-            "task_count=%d result_count=%d total_batches=%d "
-            "final_statuses=%s",
+            "task_count=%d result_count=%d total_batches=%d final_statuses=%s",
             execution_id,
             execution_status,
             waiting_task_id,
@@ -1029,8 +1033,7 @@ class SequentialExecutor:
         )
 
         logger.debug(
-            "planner.execution_final_results "
-            "execution_id=%s results=%s",
+            "planner.execution_final_results execution_id=%s results=%s",
             execution_id,
             pformat(results, sort_dicts=False),
         )
@@ -1041,3 +1044,367 @@ class SequentialExecutor:
             "waiting_task_id": waiting_task_id,
             "results": results,
         }
+
+    # ============================================================
+    # MAIN EXECUTION LOOP
+    # ============================================================
+
+    async def execute(
+        self,
+        plan: Plan,
+        user_id: int,
+    ) -> dict[str, Any]:
+        """Create and execute a new persisted plan."""
+
+        if (
+            isinstance(user_id, bool)
+            or not isinstance(user_id, int)
+            or user_id <= 0
+        ):
+            raise ValueError(
+                "A valid authenticated user_id is required."
+            )
+
+        logger.info(
+            "planner.execution_started user_id=%s task_count=%d",
+            user_id,
+            len(plan.tasks),
+        )
+
+        scheduler = DependencyAwareScheduler(
+            plan=plan,
+            registry=self.registry,
+            max_batch_size=self.max_batch_size,
+        )
+
+        execution_id = await self._create_execution_record(
+            plan=plan,
+            user_id=user_id,
+            scheduler=scheduler,
+        )
+
+        logger.info(
+            "planner.executor_scheduler_created "
+            "execution_id=%s task_ids=%s initial_statuses=%s prerequisites=%s",
+            execution_id,
+            list(scheduler.tasks.keys()),
+            scheduler.statuses,
+            scheduler.prerequisites,
+        )
+
+        return await self._run_execution_loop(
+            plan=plan,
+            scheduler=scheduler,
+            results={},
+            user_id=user_id,
+            execution_id=execution_id,
+        )
+
+        # ============================================================
+    # APPROVAL RESUMPTION
+    # ============================================================
+
+    
+    async def resume(
+        self,
+        *,
+        execution_id: int,
+        user_id: int,
+        approval_id: int,
+        waiting_task_id: str,
+    ) -> dict[str, Any]:
+        """
+        Resume an existing execution after an admin approves
+        its pending checkout task.
+        """
+
+        # ============================================================
+        # 1. VALIDATE INPUTS
+        # ============================================================
+
+        if (
+            isinstance(user_id, bool)
+            or not isinstance(user_id, int)
+            or user_id <= 0
+        ):
+            raise ValueError(
+                "A valid authenticated user_id is required."
+            )
+
+        if (
+            isinstance(execution_id, bool)
+            or not isinstance(execution_id, int)
+            or execution_id <= 0
+        ):
+            raise ValueError("A valid execution_id is required.")
+
+        if (
+            isinstance(approval_id, bool)
+            or not isinstance(approval_id, int)
+            or approval_id <= 0
+        ):
+            raise ValueError("A valid approval_id is required.")
+
+        if (
+            not isinstance(waiting_task_id, str)
+            or not waiting_task_id.strip()
+        ):
+            raise ValueError("A valid waiting_task_id is required.")
+
+        if self.approval_service_context is None:
+            raise RuntimeError(
+                "Approval service is not configured."
+            )
+
+        if self.execution_service_context is None:
+            raise RuntimeError(
+                "Execution service is not configured."
+            )
+
+        logger.info(
+            "planner.execution_resume_started "
+            "execution_id=%s approval_id=%s "
+            "waiting_task_id=%s user_id=%s",
+            execution_id,
+            approval_id,
+            waiting_task_id,
+            user_id,
+        )
+
+        # ============================================================
+        # 2. VALIDATE THE APPROVED REQUEST
+        # ============================================================
+
+        async with self.approval_service_context() as approval_service:
+
+            approval = await approval_service.get_approved_request(
+                approval_id=approval_id,
+                user_id=user_id,
+                execution_id=execution_id,
+                waiting_task_id=waiting_task_id,
+            )
+
+        if approval is None:
+            raise TaskExecutionError(
+                "Unable to validate the approved request."
+            )
+
+        logger.info(
+            "planner.approved_request_validated "
+            "approval_id=%s execution_id=%s task_id=%s status=%s",
+            approval.id,
+            execution_id,
+            waiting_task_id,
+            approval.status,
+        )
+
+        # ============================================================
+        # 3. EXTRACT APPROVED CART SNAPSHOT
+        # ============================================================
+
+        expected_cart_snapshot = deepcopy(
+            approval.cart_snapshot
+        )
+
+        if not isinstance(expected_cart_snapshot, dict):
+            raise TaskExecutionError(
+                "Approved cart snapshot is missing or invalid."
+            )
+
+        logger.info(
+            "planner.approved_cart_snapshot_loaded "
+            "approval_id=%s execution_id=%s",
+            approval_id,
+            execution_id,
+        )
+
+        # ============================================================
+        # 4. LOAD EXECUTION WITHOUT CLAIMING IT
+        # ============================================================
+
+        async with self.execution_service_context() as execution_service:
+
+            execution = await execution_service.get_execution_for_user(
+                execution_id=execution_id,
+                user_id=user_id,
+            )
+
+        if execution is None:
+            raise TaskExecutionError(
+                "Execution not found or does not belong to this user."
+            )
+
+        if (
+            execution.status
+            != ExecutionStatus.WAITING_FOR_APPROVAL.value
+        ):
+            raise TaskExecutionError(
+                "Execution is not waiting for approval and cannot be resumed."
+            )
+
+        if execution.waiting_task_id != waiting_task_id:
+            raise TaskExecutionError(
+                "Execution is not waiting for the specified task."
+            )
+
+        logger.info(
+            "planner.execution_loaded_for_resume "
+            "execution_id=%s status=%s waiting_task_id=%s",
+            execution.id,
+            execution.status,
+            execution.waiting_task_id,
+        )
+
+        # ============================================================
+        # 5. RESTORE PERSISTED EXECUTION DATA
+        # ============================================================
+
+        try:
+            plan = Plan.model_validate(execution.plan)
+
+            results = deepcopy(execution.results or {})
+
+            task_statuses = deepcopy(
+                execution.task_statuses or {}
+            )
+
+        except Exception as exc:
+            logger.exception(
+                "planner.execution_restore_failed "
+                "execution_id=%s",
+                execution_id,
+            )
+
+            raise TaskExecutionError(
+                "Persisted execution data could not be restored."
+            ) from exc
+
+        # Find the task which was waiting for approval.
+        approved_task = next(
+            (
+                task
+                for task in plan.tasks
+                if task.id == waiting_task_id
+            ),
+            None,
+        )
+
+        if approved_task is None:
+            raise TaskExecutionError(
+                f"Task {waiting_task_id!r} does not exist "
+                "in the persisted plan."
+            )
+
+        if approved_task.operation != "place_order":
+            raise TaskExecutionError(
+                "Approval resumption is only supported for place_order."
+            )
+
+        logger.info(
+            "planner.execution_data_restored "
+            "execution_id=%s task_count=%d result_count=%d "
+            "approved_task_id=%s",
+            execution_id,
+            len(plan.tasks),
+            len(results),
+            approved_task.id,
+        )
+
+        # ============================================================
+        # 6. RECONSTRUCT AND VALIDATE SCHEDULER
+        # ============================================================
+
+        scheduler = DependencyAwareScheduler(
+            plan=plan,
+            registry=self.registry,
+            max_batch_size=self.max_batch_size,
+        )
+
+        scheduler.restore_statuses(task_statuses)
+
+        logger.info(
+            "planner.scheduler_restored "
+            "execution_id=%s statuses=%s",
+            execution_id,
+            scheduler.statuses,
+        )
+
+        # Resolve approval in memory only.
+        # No database execution state has been changed yet.
+        scheduler.resolve_approved(waiting_task_id)
+
+        logger.info(
+            "planner.approved_task_resolved "
+            "execution_id=%s approval_id=%s task_id=%s statuses=%s",
+            execution_id,
+            approval_id,
+            waiting_task_id,
+            scheduler.statuses,
+        )
+
+        # ============================================================
+        # 7. ATOMICALLY CLAIM EXECUTION
+        # ============================================================
+
+        try:
+            claimed_execution = await self._claim_execution_for_resume(
+                execution_id=execution_id,
+                user_id=user_id,
+                waiting_task_id=waiting_task_id,
+            )
+
+        except ValueError as exc:
+            # AgentExecutionService currently raises ValueError
+            # when the repository cannot claim the execution.
+            logger.warning(
+                "planner.execution_resume_claim_failed "
+                "execution_id=%s approval_id=%s waiting_task_id=%s",
+                execution_id,
+                approval_id,
+                waiting_task_id,
+            )
+
+            raise TaskExecutionError(
+                "Execution cannot be resumed. It may already be "
+                "running, completed, or no longer waiting for approval."
+            ) from exc
+
+        if claimed_execution is None:
+            raise TaskExecutionError(
+                "Execution could not be claimed for resumption."
+            )
+
+        logger.info(
+            "planner.execution_claimed_for_resume "
+            "execution_id=%s approval_id=%s status=%s",
+            execution_id,
+            approval_id,
+            claimed_execution.status,
+        )
+
+        # ============================================================
+        # 8. RESUME EXECUTION
+        # ============================================================
+
+        logger.info(
+            "planner.execution_resuming "
+            "execution_id=%s approval_id=%s approved_task_id=%s",
+            execution_id,
+            approval_id,
+            waiting_task_id,
+        )
+
+        return await self._run_execution_loop(
+            plan=plan,
+            scheduler=scheduler,
+            results=results,
+            user_id=user_id,
+            execution_id=execution_id,
+
+            # Only this task gets the approval bypass.
+            approved_task_id=waiting_task_id,
+
+            # These values are passed through to _execute_one().
+            approval_id=approval.id,
+            expected_cart_snapshot=expected_cart_snapshot,
+        )

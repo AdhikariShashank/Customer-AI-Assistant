@@ -17,6 +17,43 @@ class AgentExecutionService:
     ):
         self.repository = repository
 
+    async def get_execution_for_user(
+        self,
+        *,
+        execution_id: int,
+        user_id: int,
+    ) -> AgentExecution | None:
+        """Fetch an execution only if it belongs to the given user."""
+
+        return await self.repository.get_for_user(
+            execution_id=execution_id,
+            user_id=user_id,
+        )
+
+    async def claim_for_resume(
+        self,
+        *,
+        execution_id: int,
+        user_id: int,
+        waiting_task_id: str,
+    ) -> AgentExecution:
+        """Claim a waiting execution for approval resumption."""
+
+        execution = await self.repository.claim_for_resume(
+            execution_id=execution_id,
+            user_id=user_id,
+            waiting_task_id=waiting_task_id,
+        )
+
+        if execution is None:
+            raise ValueError(
+                "Execution cannot be claimed for resumption. "
+                "It may not exist, may belong to another user, "
+                "or may no longer be waiting for this task's approval."
+            )
+
+        return execution
+
     async def create_execution(
         self,
         *,

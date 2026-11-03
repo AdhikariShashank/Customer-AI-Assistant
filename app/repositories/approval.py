@@ -13,6 +13,24 @@ class ApprovalRepository:
         self.db = db
 
 
+    async def mark_consumed(
+        self,
+        approval: ApprovalRequest,
+        *,
+        order_id: int,
+        consumed_at: datetime,
+    ) -> ApprovalRequest:
+        """Link the created order and mark the approval as consumed."""
+
+        approval.order_id = order_id
+        approval.consumed_at = consumed_at
+
+        await self.db.flush()
+        await self.db.refresh(approval)
+
+        return approval
+
+
     async def get_expired_pending_for_update(
         self,
         *,

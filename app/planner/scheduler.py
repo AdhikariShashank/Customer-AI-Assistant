@@ -72,6 +72,48 @@ class DependencyAwareScheduler:
 
         self._log_state("initialization_complete")
 
+    def resolve_approved(self, task_id: str) -> None:
+        """Make an approved task eligible for execution again."""
+
+        self._validate_task_id(task_id)
+
+        current_status = self.statuses[task_id]
+
+        if current_status != "waiting_for_approval":
+            raise TaskExecutionError(
+                f"Task {task_id!r} cannot be approved "
+                f"from status {current_status!r}."
+            )
+
+        dependencies = self.prerequisites[task_id]
+
+        unfinished_dependencies = [
+            dependency
+            for dependency in dependencies
+            if self.statuses[dependency] != "succeeded"
+        ]
+
+        if unfinished_dependencies:
+            raise TaskExecutionError(
+                f"Cannot resume task {task_id!r}. "
+                f"Unfinished dependencies: {unfinished_dependencies}"
+            )
+
+        self.statuses[task_id] = "pending"
+
+        logger.info(
+            "planner.scheduler_approval_resolved "
+            "task_id=%s previous_status=%s new_status=pending "
+            "validated_dependencies=%s",
+            task_id,
+            current_status,
+            sorted(dependencies),
+        )
+
+        self._log_state(
+            event=f"approval_resolved:{task_id}"
+        )
+    
     
     def resolve_approval(
         self,

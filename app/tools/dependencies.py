@@ -11,6 +11,11 @@ from app.services.product import ProductService
 from app.services.cart import CartService
 from app.repositories.approval import ApprovalRepository
 from app.services.approval import ApprovalService
+from contextlib import asynccontextmanager
+from app.planner.operations import OperationSpec
+from app.repositories.approval import ApprovalRepository
+from app.repositories.agent_execution import AgentExecutionRepository
+from app.services.approval import ApprovalService
 
 
 @asynccontextmanager
@@ -27,13 +32,6 @@ async def execution_service_context():
         except Exception:
             await db.rollback()
             raise
-
-from contextlib import asynccontextmanager
-
-from app.planner.operations import OperationSpec
-from app.repositories.approval import ApprovalRepository
-from app.repositories.agent_execution import AgentExecutionRepository
-from app.services.approval import ApprovalService
 
 
 @asynccontextmanager
@@ -95,6 +93,26 @@ async def order_service_context():
         try:
             repository = OrderRepository(db)
             service = OrderService(repository)
+
+            yield service
+
+            await db.commit()
+
+        except Exception:
+            await db.rollback()
+            raise
+
+@asynccontextmanager
+async def checkout_service_context():
+    async with AsyncLocalSession() as db:
+        try:
+            order_repository = OrderRepository(db)
+            approval_repository = ApprovalRepository(db)
+
+            service = OrderService(
+                repository=order_repository,
+                approval_repository=approval_repository,
+            )
 
             yield service
 

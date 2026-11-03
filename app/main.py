@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
-from app.core.application import build_application_dependencies
 from app.routers import approval, chat, orders
 from .qdrant import initialize_qdrant
 from .db import create_tables
@@ -9,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
+from app.agent.dependencies import executor, registry
 
 from app.core.exceptions import AppException
 from app.core.exception_handlers import (
@@ -27,15 +27,8 @@ async def lifespan(app: FastAPI):
     await create_tables()
     initialize_qdrant()
 
-    yield
-
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    operation_registry = build_application_dependencies()
-
-    app.state.operation_registry = operation_registry
+    app.state.operation_registry = registry
+    app.state.executor = executor
 
     yield
 

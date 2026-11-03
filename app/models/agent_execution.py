@@ -19,6 +19,7 @@ from app.db import Base
 class ExecutionStatus(str, Enum):
     RUNNING = "RUNNING"
     WAITING_FOR_APPROVAL = "WAITING_FOR_APPROVAL"
+    RESUMING = "RESUMING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 

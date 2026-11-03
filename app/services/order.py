@@ -3,15 +3,24 @@ import logging
 
 from app.core.exceptions import AppException
 from app.models.order import Order
+from app.repositories.approval import ApprovalRepository
 from app.repositories.order import OrderRepository
+from datetime import datetime, timezone
+
+from app.models.approval_request import ApprovalStatus
 
 
 logger = logging.getLogger(__name__)
 
 
 class OrderService:
-    def __init__(self, repository: OrderRepository):
+    def __init__(
+        self,
+        repository: OrderRepository,
+        approval_repository: ApprovalRepository | None = None,
+    ):
         self.repository = repository
+        self.approval_repository = approval_repository
 
 
     
@@ -112,17 +121,145 @@ class OrderService:
             )
             raise
 
-    async def place_order(self, user_id: int):
+    async def place_order(
+        self,
+        user_id: int,
+        approval_id: int | None = None,
+        expected_snapshot: dict | None = None,
+    ):
         logger.info(
-            "Starting order placement: user_id=%s",
+            "Starting order placement: user_id=%s approval_id=%s",
             user_id,
+            approval_id,
         )
 
         try:
-            # Repository is responsible for atomic checkout operations.
-            order = await self.repository.place_order_from_cart(
-                user_id=user_id,
-            )
+            # Normal checkout: governance already allowed this operation.
+            if approval_id is None:
+                order = await self.repository.place_order_from_cart(
+                    user_id=user_id,
+                )
+
+            else:
+                if self.approval_repository is None:
+                    raise AppException(
+                        code="APPROVAL_SERVICE_UNAVAILABLE",
+                        message="Approval verification is unavailable.",
+                    )
+
+                # Lock approval row. Concurrent retries must wait here.
+                approval = (
+                    await self.approval_repository.get_by_id_for_update(
+                        approval_id=approval_id,
+                    )
+                )
+
+                if approval is None:
+                    raise AppException(
+                        code="APPROVAL_NOT_FOUND",
+                        message="Approval request was not found.",
+                    )
+
+                if approval.user_id != user_id:
+                    raise AppException(
+                        code="APPROVAL_OWNERSHIP_MISMATCH",
+                        message="Approval does not belong to this user.",
+                    )
+
+                if approval.operation != "place_order":
+                    raise AppException(
+                        code="APPROVAL_OPERATION_MISMATCH",
+                        message="Approval is not valid for checkout.",
+                    )
+
+                if approval.status != ApprovalStatus.APPROVED.value:
+                    raise AppException(
+                        code="APPROVAL_NOT_APPROVED",
+                        message="Approval has not been approved.",
+                    )
+
+                # Idempotency: return the order if this approval
+                # has already completed checkout.
+                if approval.consumed_at is not None:
+                    if approval.order_id is None:
+                        logger.error(
+                            "Consumed approval has no linked order: "
+                            "approval_id=%s",
+                            approval_id,
+                        )
+                        raise AppException(
+                            code="APPROVAL_CONSUMPTION_INCONSISTENT",
+                            message="Approval consumption state is inconsistent.",
+                        )
+
+                    existing_order = await self.repository.get_by_user_and_id(
+                        user_id=user_id,
+                        order_id=approval.order_id,
+                    )
+
+                    if existing_order is None:
+                        logger.error(
+                            "Consumed approval references missing order: "
+                            "approval_id=%s order_id=%s",
+                            approval_id,
+                            approval.order_id,
+                        )
+                        raise AppException(
+                            code="APPROVED_ORDER_NOT_FOUND",
+                            message="The order associated with this approval was not found.",
+                        )
+
+                    logger.info(
+                        "Returning existing order for consumed approval: "
+                        "approval_id=%s order_id=%s",
+                        approval_id,
+                        existing_order.id,
+                    )
+
+                    return existing_order
+
+                # A linked order without consumed_at is an inconsistent state.
+                if approval.order_id is not None:
+                    logger.error(
+                        "Unconsumed approval already references an order: "
+                        "approval_id=%s order_id=%s",
+                        approval_id,
+                        approval.order_id,
+                    )
+                    raise AppException(
+                        code="APPROVAL_CONSUMPTION_INCONSISTENT",
+                        message="Approval consumption state is inconsistent.",
+                    )
+
+                # Verify the executor passed the original approved snapshot.
+                if (
+                    not isinstance(expected_snapshot, dict)
+                    or expected_snapshot != approval.cart_snapshot
+                ):
+                    raise AppException(
+                        code="APPROVED_SNAPSHOT_MISMATCH",
+                        message="Checkout snapshot does not match the approved snapshot.",
+                    )
+
+                # Repository locks the cart, items and products, then
+                # validates the actual cart against the stored snapshot.
+                order = await self.repository.place_order_from_cart(
+                    user_id=user_id,
+                    expected_snapshot=approval.cart_snapshot,
+                )
+
+                if order is None:
+                    raise AppException(
+                        code="ORDER_CREATION_FAILED",
+                        message="Unable to create the approved order.",
+                    )
+
+                # Link order and consume approval in the SAME transaction.
+                await self.approval_repository.mark_consumed(
+                    approval,
+                    order_id=order.id,
+                    consumed_at=datetime.now(timezone.utc),
+                )
 
             if order is None:
                 logger.warning(
@@ -132,19 +269,23 @@ class OrderService:
                 return None
 
             logger.info(
-                "Order placed successfully: user_id=%s order_id=%s",
+                "Order placed successfully: user_id=%s order_id=%s "
+                "approval_id=%s",
                 user_id,
                 order.id,
+                approval_id,
             )
 
             return order
 
         except Exception:
             logger.exception(
-                "Order placement failed: user_id=%s",
+                "Order placement failed: user_id=%s approval_id=%s",
                 user_id,
+                approval_id,
             )
             raise
+
 
     async def cancel_order(self, user_id: int, order_id: int):
         logger.info(

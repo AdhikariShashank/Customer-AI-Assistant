@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.models.approval_request import ApprovalStatus
 from app.models.user import User
@@ -8,6 +8,7 @@ from app.routers.dependencies import get_approval_service
 from app.services.approval import ApprovalService
 from app.schemas.common import SuccessResponse
 from app.schemas.approval import ApprovalResponse, ApprovalReviewRequest
+from app.tools.dependencies import approval_service_context
 
 router = APIRouter(
     prefix="/api/v1/approvals",
@@ -64,27 +65,52 @@ async def get_approval(
 )
 async def approve_request(
     approval_id: int,
-    request: ApprovalReviewRequest,
+    request: Request,
+    review_request: ApprovalReviewRequest,
     current_admin: User = Depends(require_admin),
-    service: ApprovalService = Depends(get_approval_service),
 ):
-    approval = await service.approve(
-        approval_id=approval_id,
-        reviewer_id=current_admin.id,
-        comment=request.comment,
-    )
+    operation_registry = request.app.state.operation_registry
+    executor = request.app.state.executor
 
-    message = (
-        "Approval request has expired."
-        if approval.status == ApprovalStatus.EXPIRED.value
-        else "Approval request approved successfully"
-    )
+    # Phase 1: Approve and commit.
+    async with approval_service_context(
+        operation_registry=operation_registry,
+    ) as service:
+        approval = await service.approve(
+            approval_id=approval_id,
+            reviewer_id=current_admin.id,
+            comment=review_request.comment,
+        )
+
+    # Approval transaction is committed here.
+
+    if approval.status == ApprovalStatus.EXPIRED.value:
+        return SuccessResponse(
+            data=ApprovalResponse.model_validate(approval),
+            message="Approval request has expired.",
+        )
+
+    if approval.status == ApprovalStatus.APPROVED.value:
+        # Phase 2: Resume the waiting execution.
+        outcome = await executor.resume(
+            execution_id=approval.execution_id,
+            user_id=approval.user_id,
+            approval_id=approval.id,
+            waiting_task_id=approval.waiting_task_id,
+        )
+
+        return SuccessResponse(
+            data=ApprovalResponse.model_validate(approval),
+            message=(
+                "Approval successful. "
+                f"Execution status: {outcome['execution_status']}"
+            ),
+        )
 
     return SuccessResponse(
         data=ApprovalResponse.model_validate(approval),
-        message=message,
+        message="Approval request processed.",
     )
-
 
 @router.post(
     "/{approval_id}/reject",

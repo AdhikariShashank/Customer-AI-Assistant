@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.order import Order
 from app.services.order import OrderService
+from app.tools.dependencies import checkout_service_context
 
 
 logger = logging.getLogger(__name__)
@@ -309,52 +310,31 @@ def create_order_tools(
 
     @tool("place_order", args_schema=EmptyOrderInput)
     async def place_order(config: RunnableConfig) -> dict:
-        """Place an order using the authenticated customer's cart."""
-
         try:
             user_id = _get_authenticated_user_id(config)
 
-            logger.info(
-                "Placing order: user_id=%s",
-                user_id,
-            )
+            configurable = config.get("configurable", {})
 
-            async with order_service_context() as service:
+            approval_id = configurable.get("approval_id")
+            expected_snapshot = configurable.get("expected_cart_snapshot")
+
+            async with checkout_service_context() as service:
                 order = await service.place_order(
                     user_id=user_id,
+                    approval_id=approval_id,
+                    expected_snapshot=expected_snapshot,
                 )
 
             if order is None:
-                logger.warning(
-                    "Order service returned no order: user_id=%s",
-                    user_id,
-                )
-
                 return {
                     "ok": False,
                     "error": {
                         "code": "ORDER_CREATION_FAILED",
-                        "message": (
-                            "No order was created. "
-                            "Please check your cart."
-                        ),
+                        "message": "Unable to place your order.",
                     },
                 }
 
-            logger.info(
-                "Order service result: order_id=%s result_type=%s",
-                getattr(order, "id", None),
-                type(order).__name__,
-            )
-
             serialized_order = _serialize_order(order)
-
-            logger.info(
-                "Order placed successfully: "
-                "user_id=%s order_id=%s",
-                user_id,
-                order.id,
-            )
 
             return {
                 "ok": True,
@@ -364,7 +344,7 @@ def create_order_tools(
 
         except Exception:
             logger.exception(
-                "Failed to place order for authenticated customer."
+                "Place order tool failed."
             )
 
             return {

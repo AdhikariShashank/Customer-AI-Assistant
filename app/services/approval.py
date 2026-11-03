@@ -115,7 +115,8 @@ class ApprovalService:
             )
 
         execution = await self.execution_repository.get_by_id_for_update(
-            approval.execution_id
+            execution_id=approval.execution_id,
+            user_id=approval.user_id,
         )
 
         if execution is None:
@@ -611,3 +612,110 @@ class ApprovalService:
             status=ApprovalStatus.REJECTED,
             comment=comment,
         )
+
+
+    async def get_approved_request(
+        self,
+        *,
+        approval_id: int,
+        user_id: int,
+        execution_id: int,
+        waiting_task_id: str,
+    ) -> ApprovalRequest:
+        """Fetch and validate an approved checkout request."""
+
+        self._validate_positive_id(approval_id, "approval_id")
+        self._validate_positive_id(user_id, "user_id")
+        self._validate_positive_id(execution_id, "execution_id")
+
+        if not isinstance(waiting_task_id, str) or not waiting_task_id.strip():
+            raise AppException(
+                code="INVALID_TASK_ID",
+                message="A valid waiting task ID is required.",
+            )
+
+        approval = await self.repository.get_by_id(
+            approval_id=approval_id
+        )
+
+        if approval is None:
+            raise AppException(
+                code="APPROVAL_NOT_FOUND",
+                message="Approval request not found.",
+            )
+
+        # --------------------------------------------------
+        # OWNERSHIP VALIDATION
+        # --------------------------------------------------
+
+        if approval.user_id != user_id:
+            raise AppException(
+                code="APPROVAL_ACCESS_DENIED",
+                message="Approval does not belong to this user.",
+            )
+
+        # --------------------------------------------------
+        # APPROVAL STATUS VALIDATION
+        # --------------------------------------------------
+
+        if approval.status != ApprovalStatus.APPROVED.value:
+            raise AppException(
+                code="APPROVAL_NOT_APPROVED",
+                message="This approval request has not been approved.",
+            )
+
+        # --------------------------------------------------
+        # EXECUTION VALIDATION
+        # --------------------------------------------------
+
+        if approval.execution_id != execution_id:
+            raise AppException(
+                code="APPROVAL_EXECUTION_MISMATCH",
+                message="Approval does not belong to this execution.",
+            )
+
+        # --------------------------------------------------
+        # TASK VALIDATION
+        # --------------------------------------------------
+
+        if approval.waiting_task_id != waiting_task_id:
+            raise AppException(
+                code="APPROVAL_TASK_MISMATCH",
+                message="Approval does not belong to this waiting task.",
+            )
+
+        if approval.operation != "place_order":
+            raise AppException(
+                code="APPROVAL_OPERATION_UNSUPPORTED",
+                message="This approval is not for a checkout operation.",
+            )
+
+        # --------------------------------------------------
+        # CHECKOUT FACT VALIDATION
+        # --------------------------------------------------
+
+        # Your model stores these as separate columns/fields:
+        # cart_id, requested_amount, currency, cart_snapshot.
+        #
+        # Reuse the existing checkout-facts validator.
+
+        self._validate_checkout_facts(
+            {
+                "cart_id": approval.cart_id,
+                "order_total": approval.requested_amount,
+                "currency": approval.currency,
+                "cart_snapshot": approval.cart_snapshot,
+            }
+        )
+
+        logger.info(
+            "approval.approved_request_validated "
+            "approval_id=%s user_id=%s execution_id=%s "
+            "waiting_task_id=%s",
+            approval.id,
+            user_id,
+            execution_id,
+            waiting_task_id,
+        )
+
+        return approval
