@@ -45,3 +45,15 @@ class User(Base):
         foreign_keys="ApprovalRequest.reviewed_by",
         back_populates="reviewer",
     )
+
+    memories = relationship(
+        "UserMemory",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    episodes = relationship(
+        "UserEpisode",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
