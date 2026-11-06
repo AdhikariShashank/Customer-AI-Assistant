@@ -3,9 +3,15 @@ import re
 
 from app.memory.schemas import (
     MemoryExtractionResult,
-    SemanticMemoryCandidate,
+    MemoryOperation,
+    SemanticMemoryOperation,
     EpisodicMemoryCandidate,
 )
+
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryNormalizer:
@@ -43,42 +49,68 @@ class MemoryNormalizer:
         normalized = self.normalize_identifier(event_type)
         return self.EVENT_ALIASES.get(normalized, normalized)
 
+    
     def normalize(
         self,
         result: MemoryExtractionResult,
     ) -> MemoryExtractionResult:
 
-        semantic_memories = []
-        seen_semantic = set()
+        logger.info(
+            "memory.normalization_started operations=%d episodes=%d",
+            len(result.semantic_operations),
+            len(result.episodic_memories),
+        )
 
-        for memory in result.semantic_memories:
+        operations = []
+        seen = set()
+
+        for memory in result.semantic_operations:
             key = self.normalize_key(memory.key)
             category = memory.category.value
 
-            value = dict(memory.value)
+            value = (
+                dict(memory.value)
+                if memory.value is not None
+                else None
+            )
 
-            # Normalize the known phone-budget representation.
-            if key == "phone_budget":
+            if (
+                memory.operation == MemoryOperation.UPSERT
+                and key == "phone_budget"
+                and value is not None
+            ):
                 if "max_budget" in value:
                     value["amount"] = value.pop("max_budget")
 
-                if "currency" not in value:
-                    original_key = self.normalize_identifier(
-                        memory.key
-                    )
+                original_key = self.normalize_identifier(
+                    memory.key
+                )
 
-                    if original_key.endswith("_inr"):
-                        value["currency"] = "INR"
+                if (
+                    "currency" not in value
+                    and original_key.endswith("_inr")
+                ):
+                    value["currency"] = "INR"
 
-            identity = (category, key)
+            identity = (
+                memory.operation.value,
+                category,
+                key,
+            )
 
-            if identity in seen_semantic:
+            if identity in seen:
+                logger.debug(
+                    "memory.normalization_duplicate_skipped "
+                    "category=%s",
+                    category,
+                )
                 continue
 
-            seen_semantic.add(identity)
+            seen.add(identity)
 
-            semantic_memories.append(
-                SemanticMemoryCandidate(
+            operations.append(
+                SemanticMemoryOperation(
+                    operation=memory.operation,
                     category=memory.category,
                     key=key,
                     value=value,
@@ -86,20 +118,25 @@ class MemoryNormalizer:
                 )
             )
 
-        episodic_memories = []
-
-        for episode in result.episodic_memories:
-            episodic_memories.append(
-                EpisodicMemoryCandidate(
-                    event_type=self.normalize_event_type(
-                        episode.event_type
-                    ),
-                    description=episode.description.strip(),
-                    episode_metadata=episode.episode_metadata,
-                )
+        episodes = [
+            EpisodicMemoryCandidate(
+                event_type=self.normalize_event_type(
+                    episode.event_type
+                ),
+                description=episode.description.strip(),
+                episode_metadata=episode.episode_metadata,
             )
+            for episode in result.episodic_memories
+        ]
+
+        logger.info(
+            "memory.normalization_completed "
+            "operations=%d episodes=%d",
+            len(operations),
+            len(episodes),
+        )
 
         return MemoryExtractionResult(
-            semantic_memories=semantic_memories,
-            episodic_memories=episodic_memories,
+            semantic_operations=operations,
+            episodic_memories=episodes,
         )
